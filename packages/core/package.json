@@ -1,6 +1,6 @@
 {
   "name": "@transactional-reducer/core",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "A transactional state management library with reducer pattern",
   "main": "dist/TransactionalReducer.js",
   "types": "dist/TransactionalReducer.d.ts",
