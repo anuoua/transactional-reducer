@@ -1,6 +1,6 @@
 {
   "name": "@transactional-reducer/react",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "React bindings for transactional-reducer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,6 +34,11 @@
   ],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anuoua/transactional-reducer.git",
+    "directory": "packages/react"
+  },
   "packageManager": "pnpm@10.32.1",
   "peerDependencies": {
     "@transactional-reducer/core": "workspace:*",

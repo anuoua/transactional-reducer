@@ -1,6 +1,6 @@
 {
   "name": "@transactional-reducer/core",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "A transactional state management library with reducer pattern",
   "main": "dist/TransactionalReducer.js",
   "types": "dist/TransactionalReducer.d.ts",
@@ -32,6 +32,11 @@
   ],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anuoua/transactional-reducer.git",
+    "directory": "packages/core"
+  },
   "packageManager": "pnpm@10.32.1",
   "devDependencies": {
     "typescript": "^6.0.3",
