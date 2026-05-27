@@ -2,27 +2,15 @@
   "name": "@transactional-reducer/react",
   "version": "0.0.1",
   "description": "React bindings for transactional-reducer",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "type": "module",
-  "exports": {
-    ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    }
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "test": "vitest --run",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsdown",
     "prepublishOnly": "pnpm run build"
   },
   "keywords": [
@@ -54,6 +42,7 @@
     "@types/react": "^19.1.6",
     "jsdom": "^29.1.1",
     "react": "^19.1.6",
+    "tsdown": "^0.22.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.7"
   }
