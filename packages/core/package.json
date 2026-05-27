@@ -1,6 +1,6 @@
 {
   "name": "@transactional-reducer/core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A transactional state management library with reducer pattern",
   "main": "dist/index.mjs",
   "types": "dist/index.d.mts",
