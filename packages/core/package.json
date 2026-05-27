@@ -30,8 +30,12 @@
     "reducer",
     "state-management"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "anuoua <anuoua@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/anuoua/transactional-reducer#readme",
+  "bugs": {
+    "url": "https://github.com/anuoua/transactional-reducer/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anuoua/transactional-reducer.git",
