@@ -58,20 +58,29 @@ describe("TransactionalReducer", () => {
       manualTx.dispatch({ type: "inc" });
       expect(engine.state).toEqual({ count: 1 });
 
-      engine.run((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "named" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "named" },
+      );
       expect(engine.state).toEqual({ count: -1 });
     });
 
     it("with id option: different invocations with different ids coexist", () => {
       const engine = setup();
-      engine.run((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "task-a" });
-      engine.run((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "task-b" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "task-a" },
+      );
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "task-b" },
+      );
       expect(engine.state).toEqual({ count: 2 });
     });
 
@@ -79,10 +88,13 @@ describe("TransactionalReducer", () => {
       const engine = setup();
       let thrownError: Error | undefined;
       try {
-        engine.run((tx) => {
-          tx.dispatch({ type: "inc" });
-          throw new Error("fail");
-        }, { onError: "commit" });
+        engine.run(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+            throw new Error("fail");
+          },
+          { onError: "commit" },
+        );
       } catch (e) {
         thrownError = e as Error;
       }
@@ -94,10 +106,13 @@ describe("TransactionalReducer", () => {
       const engine = setup();
       let thrownError: Error | undefined;
       try {
-        await engine.run(async (tx) => {
-          tx.dispatch({ type: "inc" });
-          throw new Error("async-fail");
-        }, { onError: "commit" });
+        await engine.run(
+          async (tx) => {
+            tx.dispatch({ type: "inc" });
+            throw new Error("async-fail");
+          },
+          { onError: "commit" },
+        );
       } catch (e) {
         thrownError = e as Error;
       }

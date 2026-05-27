@@ -9,9 +9,12 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child", onError: "commit" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child", onError: "commit" },
+      );
 
       expect(engine.state).toEqual({ count: 2 });
 
@@ -24,12 +27,18 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((child) => {
-        child.dispatch({ type: "inc" });
-        child.spawn((gc) => {
-          gc.dispatch({ type: "inc" });
-        }, { id: "grandchild" });
-      }, { id: "child", onError: "commit" });
+      parent.spawn(
+        (child) => {
+          child.dispatch({ type: "inc" });
+          child.spawn(
+            (gc) => {
+              gc.dispatch({ type: "inc" });
+            },
+            { id: "grandchild" },
+          );
+        },
+        { id: "child", onError: "commit" },
+      );
 
       expect(engine.state).toEqual({ count: 3 });
 
@@ -41,13 +50,19 @@ describe("TransactionalReducer", () => {
       const engine = setup();
       let thrownError: Error | undefined;
       try {
-        await engine.run(async (tx) => {
-          tx.dispatch({ type: "inc" });
-          await tx.spawn(async (childTx) => {
-            childTx.dispatch({ type: "inc" });
-          }, { id: "validate", onError: "commit" });
-          throw new Error("submit-fail");
-        }, { id: "submit", onError: "rollback" });
+        await engine.run(
+          async (tx) => {
+            tx.dispatch({ type: "inc" });
+            await tx.spawn(
+              async (childTx) => {
+                childTx.dispatch({ type: "inc" });
+              },
+              { id: "validate", onError: "commit" },
+            );
+            throw new Error("submit-fail");
+          },
+          { id: "submit", onError: "rollback" },
+        );
       } catch (e) {
         thrownError = e as Error;
       }
@@ -60,9 +75,12 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child", onError: "rollback" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child", onError: "rollback" },
+      );
 
       expect(engine.state).toEqual({ count: 2 });
 
@@ -75,13 +93,19 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "commit-child", onError: "commit" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "commit-child", onError: "commit" },
+      );
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "rollback-child", onError: "rollback" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "rollback-child", onError: "rollback" },
+      );
 
       expect(engine.state).toEqual({ count: 3 });
 
@@ -98,12 +122,17 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 1 });
 
       let resolveChild!: () => void;
-      const childPromise = new Promise<void>((r) => { resolveChild = r; });
+      const childPromise = new Promise<void>((r) => {
+        resolveChild = r;
+      });
 
-      const spawnResult = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await childPromise;
-      }, { id: "child", onError: "commit" });
+      const spawnResult = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await childPromise;
+        },
+        { id: "child", onError: "commit" },
+      );
 
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 2 });
@@ -119,7 +148,9 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 0 });
 
       resolveChild();
-      try { await spawnResult; } catch { }
+      try {
+        await spawnResult;
+      } catch {}
     });
 
     it("preserved async child subtree rollback after parent rollback", async () => {
@@ -130,17 +161,27 @@ describe("TransactionalReducer", () => {
 
       let resolveChild!: () => void;
       let resolveGrandchild!: () => void;
-      const childPromise = new Promise<void>((r) => { resolveChild = r; });
-      const gcPromise = new Promise<void>((r) => { resolveGrandchild = r; });
+      const childPromise = new Promise<void>((r) => {
+        resolveChild = r;
+      });
+      const gcPromise = new Promise<void>((r) => {
+        resolveGrandchild = r;
+      });
 
-      const spawnResult = parent.spawn(async (childTx) => {
-        childTx.dispatch({ type: "inc" });
-        await childTx.spawn(async (gcTx) => {
-          gcTx.dispatch({ type: "inc" });
-          await gcPromise;
-        }, { id: "grandchild" });
-        await childPromise;
-      }, { id: "child", onError: "commit" });
+      const spawnResult = parent.spawn(
+        async (childTx) => {
+          childTx.dispatch({ type: "inc" });
+          await childTx.spawn(
+            async (gcTx) => {
+              gcTx.dispatch({ type: "inc" });
+              await gcPromise;
+            },
+            { id: "grandchild" },
+          );
+          await childPromise;
+        },
+        { id: "child", onError: "commit" },
+      );
 
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 3 });
@@ -157,7 +198,9 @@ describe("TransactionalReducer", () => {
 
       resolveGrandchild!();
       resolveChild!();
-      try { await spawnResult; } catch { }
+      try {
+        await spawnResult;
+      } catch {}
     });
 
     it("preserved async child dispatch + rollback after parent rollback", async () => {
@@ -167,12 +210,17 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 1 });
 
       let resolveChild!: () => void;
-      const childPromise = new Promise<void>((r) => { resolveChild = r; });
+      const childPromise = new Promise<void>((r) => {
+        resolveChild = r;
+      });
 
-      const spawnResult = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await childPromise;
-      }, { id: "child", onError: "commit" });
+      const spawnResult = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await childPromise;
+        },
+        { id: "child", onError: "commit" },
+      );
 
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 2 });
@@ -190,7 +238,9 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 0 });
 
       resolveChild();
-      try { await spawnResult; } catch { }
+      try {
+        await spawnResult;
+      } catch {}
     });
   });
 });

@@ -11,7 +11,7 @@ import {
   type TransactionHandle,
   type TransactionalReducerOptions,
   type TransactionEngine,
-} from "./Transaction"
+} from "./Transaction";
 
 export type {
   Ref,
@@ -21,46 +21,48 @@ export type {
   TransactionOptions,
   TransactionHandle,
   TransactionalReducerOptions,
-}
+};
 
-export type { Transaction }
+export type { Transaction };
 
 export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
-  readonly reducer: (state: S, action: A) => S
-  readonly options: TransactionalReducerOptions<S> | undefined
-  readonly stateRef: Ref<S>
-  readonly actionLogRef: Ref<ActionLogEntry<A>[]>
-  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>
-  readonly generationRef: Ref<Map<string, number>>
+  readonly reducer: (state: S, action: A) => S;
+  readonly options: TransactionalReducerOptions<S> | undefined;
+  readonly stateRef: Ref<S>;
+  readonly actionLogRef: Ref<ActionLogEntry<A>[]>;
+  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>;
+  readonly generationRef: Ref<Map<string, number>>;
 
-  private _listeners = new Set<(state: S) => void>()
+  private _listeners = new Set<(state: S) => void>();
 
   constructor(
     reducer: (state: S, action: A) => S,
     initialState: S,
     options?: TransactionalReducerOptions<S>,
   ) {
-    this.reducer = reducer
-    this.options = options
-    this.stateRef = { current: initialState }
-    this.actionLogRef = { current: [] }
-    this.transactionsRef = { current: new Map() }
-    this.generationRef = { current: new Map() }
+    this.reducer = reducer;
+    this.options = options;
+    this.stateRef = { current: initialState };
+    this.actionLogRef = { current: [] };
+    this.transactionsRef = { current: new Map() };
+    this.generationRef = { current: new Map() };
   }
 
   get state(): S {
-    return this.stateRef.current
+    return this.stateRef.current;
   }
 
   subscribe(listener: (state: S) => void): () => void {
-    this._listeners.add(listener)
-    return () => { this._listeners.delete(listener) }
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
   }
 
   _notify(): void {
-    const state = this.stateRef.current
+    const state = this.stateRef.current;
     for (const listener of this._listeners) {
-      listener(state)
+      listener(state);
     }
   }
 
@@ -69,51 +71,39 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   // 无活跃事务时日志不必要——不可能发生回滚，因此跳过日志记录。
   dispatch(action: A): void {
     if (this._hasActiveTransactions()) {
-      this.actionLogRef.current.push({ action, txId: null, generation: 0 })
+      this.actionLogRef.current.push({ action, txId: null, generation: 0 });
     }
-    this._applyAction(action)
+    this._applyAction(action);
   }
 
   run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R {
-    const strategy = options?.onDuplicate ?? this.options?.onDuplicate ?? "rollback"
+    const strategy = options?.onDuplicate ?? this.options?.onDuplicate ?? "rollback";
     if (strategy === "reuse" && options?.id) {
-      const existing = this.transactionsRef.current.get(options.id)
+      const existing = this.transactionsRef.current.get(options.id);
       if (existing?.status === "active") {
-        throw new Error(
-          `Cannot run: transaction "${options.id}" is already active`,
-        )
+        throw new Error(`Cannot run: transaction "${options.id}" is already active`);
       }
     }
-    const tx = this._createTx(
-      options?.id,
-      null,
-      options?.onError ?? "rollback",
-      strategy,
-    )
-    return this._runWithTx(tx, task)
+    const tx = this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
+    return this._runWithTx(tx, task);
   }
 
   create(options?: TransactionOptions): TransactionHandle<A> {
-    const strategy = options?.onDuplicate ?? this.options?.onDuplicate ?? "rollback"
+    const strategy = options?.onDuplicate ?? this.options?.onDuplicate ?? "rollback";
     if (strategy === "reuse" && options?.id) {
-      const existing = this.transactionsRef.current.get(options.id)
-      if (existing?.status === "active") return existing
+      const existing = this.transactionsRef.current.get(options.id);
+      if (existing?.status === "active") return existing;
     }
-    return this._createTx(
-      options?.id,
-      null,
-      options?.onError ?? "rollback",
-      strategy,
-    )
+    return this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
   }
 
   getTransaction(id: string): TransactionHandle<A> | undefined {
-    return this.transactionsRef.current.get(id)
+    return this.transactionsRef.current.get(id);
   }
 
   _applyAction(action: A): void {
-    this.stateRef.current = this.reducer(this.stateRef.current, action)
-    this._notify()
+    this.stateRef.current = this.reducer(this.stateRef.current, action);
+    this._notify();
   }
 
   // ─── _createTx ────────────────────────────────────────────────────────
@@ -143,24 +133,20 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     onError: OnErrorStrategy,
     onDuplicate: OnDuplicateStrategy,
   ): Transaction<S, A> {
-    const txId = id || this.options?.idGenerator?.() || _generateId()
-    const existing = this.transactionsRef.current.get(txId)
+    const txId = id || this.options?.idGenerator?.() || _generateId();
+    const existing = this.transactionsRef.current.get(txId);
     if (existing?.status === "active") {
       switch (onDuplicate) {
         case "rollback":
-          existing._rollback()
-          break
+          existing._rollback();
+          break;
         case "commit":
-          existing._rollbackActiveDescendants()
-          existing._commit()
+          existing._rollbackActiveDescendants();
+          existing._commit();
           if (existing.parentId !== null) {
-            for (
-              let i = existing.snapshotIndex;
-              i < this.actionLogRef.current.length;
-              i++
-            ) {
-              const entry = this.actionLogRef.current[i]!
-              if (entry.skipped) continue
+            for (let i = existing.snapshotIndex; i < this.actionLogRef.current.length; i++) {
+              const entry = this.actionLogRef.current[i]!;
+              if (entry.skipped) continue;
               if (
                 entry.txId === existing.id ||
                 _isDescendantOf(entry.txId, existing.id, this.transactionsRef.current)
@@ -169,35 +155,27 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
                   action: entry.action,
                   txId: null,
                   generation: 0,
-                }
+                };
               }
             }
-            _cleanupCommittedDescendants(existing.id, this.transactionsRef.current)
+            _cleanupCommittedDescendants(existing.id, this.transactionsRef.current);
           }
-          break
+          break;
         case "reject":
-          throw new Error(`Transaction "${txId}" is already active`)
+          throw new Error(`Transaction "${txId}" is already active`);
         case "reuse":
-          break
+          break;
       }
     }
 
-    const generation = this._nextGeneration(txId)
-    const snapshot = (this.options?.snapshot ?? structuredClone)(this.stateRef.current)
-    const snapshotIndex = this.actionLogRef.current.length
+    const generation = this._nextGeneration(txId);
+    const snapshot = (this.options?.snapshot ?? structuredClone)(this.stateRef.current);
+    const snapshotIndex = this.actionLogRef.current.length;
 
-    const tx = new Transaction(
-      this,
-      txId,
-      parentId,
-      onError,
-      generation,
-      snapshot,
-      snapshotIndex,
-    )
+    const tx = new Transaction(this, txId, parentId, onError, generation, snapshot, snapshotIndex);
 
-    this.transactionsRef.current.set(txId, tx)
-    return tx
+    this.transactionsRef.current.set(txId, tx);
+    return tx;
   }
 
   // ─── _runWithTx ───────────────────────────────────────────────────────
@@ -218,22 +196,19 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   //
   // 对于同步任务，执行期间不可能过期（无异步暂停），无需检查。
   // ────────────────────────────────────────────────────────────────────────
-  _runWithTx<R>(
-    tx: Transaction<S, A>,
-    task: (tx: TransactionHandle<A>) => R,
-  ): R {
+  _runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R {
     try {
-      const result = task(tx)
+      const result = task(tx);
       if (result instanceof Promise) {
         return result.then(
           (r) => {
             // 过期检查：如果事务已被替换（例如第二次 run 使用相同 id），
             // 跳过提交——新事务现在拥有该 id。
             if (!tx.isStale()) {
-              tx._rollbackActiveDescendants()
-              tx._commit()
+              tx._rollbackActiveDescendants();
+              tx._commit();
             }
-            return r
+            return r;
           },
           (e) => {
             if (tx.onError === "commit") {
@@ -241,45 +216,45 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
               // 仍需过期检查——过期句柄绝不能提交
               // （会从 transactionsRef 删除新事务）。
               if (!tx.isStale()) {
-                tx._rollbackActiveDescendants()
-                tx._commit()
+                tx._rollbackActiveDescendants();
+                tx._commit();
               }
             } else {
               // _rollback 内部有自己的过期检查，
               // 此处无需额外检查。
-              tx._rollback()
+              tx._rollback();
             }
-            throw e
+            throw e;
           },
-        ) as unknown as R
+        ) as unknown as R;
       }
       // 同步成功：同步执行期间不可能过期
-      tx._rollbackActiveDescendants()
-      tx._commit()
-      return result
+      tx._rollbackActiveDescendants();
+      tx._commit();
+      return result;
     } catch (e) {
       // 同步错误：同样不可能过期
       if (tx.onError === "commit") {
-        tx._rollbackActiveDescendants()
-        tx._commit()
+        tx._rollbackActiveDescendants();
+        tx._commit();
       } else {
-        tx._rollback()
+        tx._rollback();
       }
-      throw e
+      throw e;
     }
   }
 
   private _nextGeneration(txId: string): number {
-    const prev = this.generationRef.current.get(txId) ?? 0
-    const next = prev + 1
-    this.generationRef.current.set(txId, next)
-    return next
+    const prev = this.generationRef.current.get(txId) ?? 0;
+    const next = prev + 1;
+    this.generationRef.current.set(txId, next);
+    return next;
   }
 
   private _hasActiveTransactions(): boolean {
     for (const tx of this.transactionsRef.current.values()) {
-      if (tx.status === "active") return true
+      if (tx.status === "active") return true;
     }
-    return false
+    return false;
   }
 }

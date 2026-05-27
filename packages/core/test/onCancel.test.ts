@@ -41,24 +41,32 @@ describe("TransactionalReducer", () => {
         resolveFirst = r;
       });
 
-      engine.run(async (tx) => {
-        tx.onCancel(onCancel);
-        tx.dispatch({ type: "inc" });
-        await firstPromise;
-      }, { id: "search" });
+      engine.run(
+        async (tx) => {
+          tx.onCancel(onCancel);
+          tx.dispatch({ type: "inc" });
+          await firstPromise;
+        },
+        { id: "search" },
+      );
 
       await Promise.resolve();
       expect(onCancel).not.toHaveBeenCalled();
 
-      engine.run((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "search" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "search" },
+      );
 
       expect(onCancel).toHaveBeenCalledTimes(1);
       expect(engine.state).toEqual({ count: -1 });
 
       resolveFirst();
-      try { await firstPromise; } catch { }
+      try {
+        await firstPromise;
+      } catch {}
     });
 
     it("fires onCancel for child in rollbackSet when parent rolls back", () => {
@@ -70,10 +78,13 @@ describe("TransactionalReducer", () => {
       parent.onCancel(parentOnCancel);
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.onCancel(childOnCancel);
-        tx.dispatch({ type: "inc" });
-      }, { id: "child", onError: "rollback" });
+      parent.spawn(
+        (tx) => {
+          tx.onCancel(childOnCancel);
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child", onError: "rollback" },
+      );
 
       expect(parentOnCancel).not.toHaveBeenCalled();
       expect(childOnCancel).not.toHaveBeenCalled();
@@ -92,10 +103,13 @@ describe("TransactionalReducer", () => {
       parent.onCancel(parentOnCancel);
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.onCancel(childOnCancel);
-        tx.dispatch({ type: "inc" });
-      }, { id: "child", onError: "commit" });
+      parent.spawn(
+        (tx) => {
+          tx.onCancel(childOnCancel);
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child", onError: "commit" },
+      );
 
       parent.rollback();
       expect(parentOnCancel).toHaveBeenCalledTimes(1);
@@ -164,14 +178,20 @@ describe("TransactionalReducer", () => {
       root.onCancel(rootCb);
       root.dispatch({ type: "inc" });
 
-      root.spawn((l1) => {
-        l1.onCancel(l1Cb);
-        l1.dispatch({ type: "inc" });
-        l1.spawn((l2) => {
-          l2.onCancel(l2Cb);
-          l2.dispatch({ type: "inc" });
-        }, { id: "l2", onError: "rollback" });
-      }, { id: "l1", onError: "rollback" });
+      root.spawn(
+        (l1) => {
+          l1.onCancel(l1Cb);
+          l1.dispatch({ type: "inc" });
+          l1.spawn(
+            (l2) => {
+              l2.onCancel(l2Cb);
+              l2.dispatch({ type: "inc" });
+            },
+            { id: "l2", onError: "rollback" },
+          );
+        },
+        { id: "l1", onError: "rollback" },
+      );
 
       root.rollback();
       expect(rootCb).toHaveBeenCalledTimes(1);
@@ -188,37 +208,51 @@ describe("TransactionalReducer", () => {
         resolveFirst = r;
       });
 
-      const firstRunResult = engine.run(async (tx) => {
-        tx.onCancel(() => ac.abort());
-        tx.dispatch({ type: "inc" });
-        await firstPromise;
-      }, { id: "search" });
+      const firstRunResult = engine.run(
+        async (tx) => {
+          tx.onCancel(() => ac.abort());
+          tx.dispatch({ type: "inc" });
+          await firstPromise;
+        },
+        { id: "search" },
+      );
 
       await Promise.resolve();
       expect(ac.signal.aborted).toBe(false);
 
-      engine.run((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "search" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "search" },
+      );
 
       expect(ac.signal.aborted).toBe(true);
       expect(engine.state).toEqual({ count: -1 });
 
       resolveFirst();
-      try { await firstRunResult; } catch { }
+      try {
+        await firstRunResult;
+      } catch {}
     });
 
     it("does NOT fire onCancel for committed child when parent auto-commits via run (sync)", () => {
       const engine = setup();
       const childOnCancel = vi.fn();
 
-      engine.run((tx) => {
-        tx.dispatch({ type: "inc" });
-        tx.spawn((childTx) => {
-          childTx.onCancel(childOnCancel);
-          childTx.dispatch({ type: "inc" });
-        }, { id: "child", onError: "rollback" });
-      }, { id: "parent" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+          tx.spawn(
+            (childTx) => {
+              childTx.onCancel(childOnCancel);
+              childTx.dispatch({ type: "inc" });
+            },
+            { id: "child", onError: "rollback" },
+          );
+        },
+        { id: "parent" },
+      );
 
       expect(childOnCancel).not.toHaveBeenCalled();
       expect(engine.state).toEqual({ count: 2 });
@@ -233,16 +267,24 @@ describe("TransactionalReducer", () => {
         resolveChild = r;
       });
 
-      const parentRunResult = engine.run(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        tx.spawn(async (childTx) => {
-          childTx.onCancel(childOnCancel);
-          childTx.dispatch({ type: "inc" });
-          await childPromise;
-        }, { id: "child", onError: "rollback" });
-      }, { id: "parent" });
+      const parentRunResult = engine.run(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          tx.spawn(
+            async (childTx) => {
+              childTx.onCancel(childOnCancel);
+              childTx.dispatch({ type: "inc" });
+              await childPromise;
+            },
+            { id: "child", onError: "rollback" },
+          );
+        },
+        { id: "parent" },
+      );
 
-      try { await parentRunResult; } catch { }
+      try {
+        await parentRunResult;
+      } catch {}
 
       expect(childOnCancel).toHaveBeenCalledTimes(1);
       expect(engine.state).toEqual({ count: 1 });

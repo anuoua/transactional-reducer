@@ -7,9 +7,12 @@ describe("TransactionalReducer", () => {
     it("creates child transaction with correct parentId", () => {
       const engine = setup();
       const parent = engine.create({ id: "parent" });
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child" },
+      );
       const childHandle = engine.getTransaction("child");
       expect(childHandle?.parentId).toBe("parent");
       expect(childHandle?.id).toBe("child");
@@ -18,9 +21,12 @@ describe("TransactionalReducer", () => {
     it("spawn inherits onError from options", () => {
       const engine = setup();
       const parent = engine.create({ id: "parent" });
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child", onError: "commit" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child", onError: "commit" },
+      );
       const childHandle = engine.getTransaction("child");
       expect(childHandle?.onError).toBe("commit");
     });
@@ -30,9 +36,12 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.commit();
       expect(() =>
-        parent.spawn((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "child" }),
+        parent.spawn(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "child" },
+        ),
       ).toThrow(/Cannot spawn from transaction "parent"/);
     });
 
@@ -41,9 +50,12 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child" },
+      );
 
       expect(engine.state).toEqual({ count: 2 });
       expect(parent.isStale()).toBe(false);
@@ -59,10 +71,13 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 1 });
 
       expect(() =>
-        parent.spawn((tx) => {
-          tx.dispatch({ type: "inc" });
-          throw new Error("child-fail");
-        }, { id: "child" }),
+        parent.spawn(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+            throw new Error("child-fail");
+          },
+          { id: "child" },
+        ),
       ).toThrow("child-fail");
 
       expect(engine.state).toEqual({ count: 1 });
@@ -77,9 +92,12 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
       parent.dispatch({ type: "inc" });
 
-      await parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-      }, { id: "child" });
+      await parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+        },
+        { id: "child" },
+      );
 
       expect(engine.state).toEqual({ count: 2 });
       parent.commit();
@@ -92,10 +110,13 @@ describe("TransactionalReducer", () => {
       parent.dispatch({ type: "inc" });
 
       await expect(
-        parent.spawn(async (tx) => {
-          tx.dispatch({ type: "inc" });
-          throw new Error("async-child-fail");
-        }, { id: "child" }),
+        parent.spawn(
+          async (tx) => {
+            tx.dispatch({ type: "inc" });
+            throw new Error("async-child-fail");
+          },
+          { id: "child" },
+        ),
       ).rejects.toThrow("async-child-fail");
 
       expect(engine.state).toEqual({ count: 1 });
@@ -106,9 +127,12 @@ describe("TransactionalReducer", () => {
     it("closure captures arguments for child task function", () => {
       const engine = setup();
       const parent = engine.create({ id: "parent" });
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "set", value: 5 });
-      }, { id: "child" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "set", value: 5 });
+        },
+        { id: "child" },
+      );
       expect(engine.state).toEqual({ count: 5 });
     });
 
@@ -119,10 +143,13 @@ describe("TransactionalReducer", () => {
 
       let thrownError: Error | undefined;
       try {
-        parent.spawn((tx) => {
-          tx.dispatch({ type: "inc" });
-          throw new Error("child-fail");
-        }, { id: "child", onError: "commit" });
+        parent.spawn(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+            throw new Error("child-fail");
+          },
+          { id: "child", onError: "commit" },
+        );
       } catch (e) {
         thrownError = e as Error;
       }
@@ -138,12 +165,18 @@ describe("TransactionalReducer", () => {
       const root = engine.create({ id: "root" });
       root.dispatch({ type: "inc" });
 
-      root.spawn((l1) => {
-        l1.dispatch({ type: "inc" });
-        l1.spawn((l2) => {
-          l2.dispatch({ type: "inc" });
-        }, { id: "l2" });
-      }, { id: "l1" });
+      root.spawn(
+        (l1) => {
+          l1.dispatch({ type: "inc" });
+          l1.spawn(
+            (l2) => {
+              l2.dispatch({ type: "inc" });
+            },
+            { id: "l2" },
+          );
+        },
+        { id: "l1" },
+      );
 
       expect(engine.state).toEqual({ count: 3 });
       root.commit();
