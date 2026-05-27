@@ -1,0 +1,40 @@
+{
+  "name": "@transactional-reducer/core",
+  "version": "1.0.0",
+  "description": "A transactional state management library with reducer pattern",
+  "main": "dist/TransactionalReducer.js",
+  "types": "dist/TransactionalReducer.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/TransactionalReducer.d.ts",
+        "default": "./dist/TransactionalReducer.js"
+      },
+      "require": {
+        "types": "./dist/TransactionalReducer.d.ts",
+        "default": "./dist/TransactionalReducer.js"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "vitest --run",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": [
+    "transaction",
+    "reducer",
+    "state-management"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.32.1",
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  }
+}
