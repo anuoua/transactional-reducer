@@ -1,1 +1,1 @@
-export * from "./TransactionalReducer"
+export * from "./TransactionalReducer";

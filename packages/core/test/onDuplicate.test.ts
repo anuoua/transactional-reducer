@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { setupWithIdGenerator, setupWithIdGeneratorAndOnDuplicate, type TransactionHandle } from "./helpers";
+import {
+  setupWithIdGenerator,
+  setupWithIdGeneratorAndOnDuplicate,
+  type TransactionHandle,
+} from "./helpers";
 import type { Action } from "./helpers";
 
 describe("TransactionalReducer", () => {
@@ -23,9 +27,12 @@ describe("TransactionalReducer", () => {
       manualTx.dispatch({ type: "inc" });
       expect(engine.state).toEqual({ count: 1 });
 
-      engine.run((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "named" });
+      engine.run(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "named" },
+      );
       expect(engine.state).toEqual({ count: -1 });
     });
 
@@ -34,20 +41,30 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveChild!: () => void;
-      const childPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await new Promise<void>((r) => { resolveChild = r; });
-      }, { id: "child1" });
+      const childPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await new Promise<void>((r) => {
+            resolveChild = r;
+          });
+        },
+        { id: "child1" },
+      );
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 1 });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "child1" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "child1" },
+      );
       expect(engine.state).toEqual({ count: -1 });
 
       resolveChild();
-      try { await childPromise; } catch { }
+      try {
+        await childPromise;
+      } catch {}
     });
 
     it("explicit onDuplicate:'rollback' behaves same as default", () => {
@@ -79,27 +96,41 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveOld!: () => void;
-      const oldPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await new Promise<void>((r) => { resolveOld = r; });
-      }, { id: "child" });
+      const oldPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await new Promise<void>((r) => {
+            resolveOld = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 1 });
 
       let resolveNew!: () => void;
-      const newPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "dec" });
-        await new Promise<void>((r) => { resolveNew = r; });
-      }, { id: "child", onDuplicate: "commit" });
+      const newPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "dec" });
+          await new Promise<void>((r) => {
+            resolveNew = r;
+          });
+        },
+        { id: "child", onDuplicate: "commit" },
+      );
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 0 });
 
       resolveNew();
-      try { await newPromise; } catch { }
+      try {
+        await newPromise;
+      } catch {}
       expect(engine.state).toEqual({ count: 0 });
 
       resolveOld();
-      try { await oldPromise; } catch { }
+      try {
+        await oldPromise;
+      } catch {}
 
       parent.rollback();
       expect(engine.state).toEqual({ count: 1 });
@@ -110,18 +141,30 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveOld!: () => void;
-      const oldPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        let resolveGrand!: () => void;
-        const grandPromise = tx.spawn(async (gtx) => {
-          gtx.dispatch({ type: "inc" });
-          await new Promise<void>((r) => { resolveGrand = r; });
-        }, { id: "grand", onError: "commit" });
-        await Promise.resolve();
-        resolveGrand!();
-        try { await grandPromise; } catch { }
-        await new Promise<void>((r) => { resolveOld = r; });
-      }, { id: "child" });
+      const oldPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          let resolveGrand!: () => void;
+          const grandPromise = tx.spawn(
+            async (gtx) => {
+              gtx.dispatch({ type: "inc" });
+              await new Promise<void>((r) => {
+                resolveGrand = r;
+              });
+            },
+            { id: "grand", onError: "commit" },
+          );
+          await Promise.resolve();
+          resolveGrand!();
+          try {
+            await grandPromise;
+          } catch {}
+          await new Promise<void>((r) => {
+            resolveOld = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -129,18 +172,27 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 2 });
 
       let resolveNew!: () => void;
-      const newPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "dec" });
-        await new Promise<void>((r) => { resolveNew = r; });
-      }, { id: "child", onDuplicate: "commit" });
+      const newPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "dec" });
+          await new Promise<void>((r) => {
+            resolveNew = r;
+          });
+        },
+        { id: "child", onDuplicate: "commit" },
+      );
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 1 });
 
       resolveNew!();
-      try { await newPromise; } catch { }
+      try {
+        await newPromise;
+      } catch {}
 
       resolveOld!();
-      try { await oldPromise; } catch { }
+      try {
+        await oldPromise;
+      } catch {}
 
       parent.rollback();
       expect(engine.state).toEqual({ count: 2 });
@@ -151,27 +203,40 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveOld!: () => void;
-      const oldPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        tx.spawn(async (gtx) => {
-          gtx.dispatch({ type: "inc" });
-          await new Promise<void>(() => { });
-        }, { id: "active-grand" });
-        await Promise.resolve();
-        expect(engine.state).toEqual({ count: 2 });
-        await new Promise<void>((r) => { resolveOld = r; });
-      }, { id: "child" });
+      const oldPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          tx.spawn(
+            async (gtx) => {
+              gtx.dispatch({ type: "inc" });
+              await new Promise<void>(() => {});
+            },
+            { id: "active-grand" },
+          );
+          await Promise.resolve();
+          expect(engine.state).toEqual({ count: 2 });
+          await new Promise<void>((r) => {
+            resolveOld = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 2 });
 
-      parent.spawn((tx) => {
-        tx.dispatch({ type: "dec" });
-      }, { id: "child", onDuplicate: "commit" });
+      parent.spawn(
+        (tx) => {
+          tx.dispatch({ type: "dec" });
+        },
+        { id: "child", onDuplicate: "commit" },
+      );
       expect(engine.state).toEqual({ count: 0 });
 
       resolveOld!();
-      try { await oldPromise; } catch { }
+      try {
+        await oldPromise;
+      } catch {}
 
       parent.rollback();
       expect(engine.state).toEqual({ count: 1 });
@@ -182,10 +247,15 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveChild!: () => void;
-      const childPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await new Promise<void>((r) => { resolveChild = r; });
-      }, { id: "child" });
+      const childPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await new Promise<void>((r) => {
+            resolveChild = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
       expect(engine.state).toEqual({ count: 1 });
 
@@ -193,7 +263,9 @@ describe("TransactionalReducer", () => {
       expect(engine.state).toEqual({ count: 1 });
 
       resolveChild!();
-      try { await childPromise; } catch { }
+      try {
+        await childPromise;
+      } catch {}
 
       parent.rollback();
       expect(engine.state).toEqual({ count: 1 });
@@ -237,9 +309,12 @@ describe("TransactionalReducer", () => {
       engine.create({ id: "named" });
 
       expect(() =>
-        engine.run((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "named", onDuplicate: "reuse" }),
+        engine.run(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "named", onDuplicate: "reuse" },
+        ),
       ).toThrow(/already active/);
     });
 
@@ -248,20 +323,30 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveChild!: () => void;
-      const childPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await new Promise<void>((r) => { resolveChild = r; });
-      }, { id: "child" });
+      const childPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await new Promise<void>((r) => {
+            resolveChild = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
 
       expect(() =>
-        parent.spawn((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "child", onDuplicate: "reuse" }),
+        parent.spawn(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "child", onDuplicate: "reuse" },
+        ),
       ).toThrow(/already active/);
 
       resolveChild!();
-      try { await childPromise; } catch { }
+      try {
+        await childPromise;
+      } catch {}
     });
 
     it("reuse without id creates new transaction (no target to reuse)", () => {
@@ -292,9 +377,12 @@ describe("TransactionalReducer", () => {
       engine.create({ id: "named" });
 
       expect(() =>
-        engine.run((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "named", onDuplicate: "reject" }),
+        engine.run(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "named", onDuplicate: "reject" },
+        ),
       ).toThrow(/already active/);
     });
 
@@ -303,20 +391,30 @@ describe("TransactionalReducer", () => {
       const parent = engine.create({ id: "parent" });
 
       let resolveChild!: () => void;
-      const childPromise = parent.spawn(async (tx) => {
-        tx.dispatch({ type: "inc" });
-        await new Promise<void>((r) => { resolveChild = r; });
-      }, { id: "child" });
+      const childPromise = parent.spawn(
+        async (tx) => {
+          tx.dispatch({ type: "inc" });
+          await new Promise<void>((r) => {
+            resolveChild = r;
+          });
+        },
+        { id: "child" },
+      );
       await Promise.resolve();
 
       expect(() =>
-        parent.spawn((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "child", onDuplicate: "reject" }),
+        parent.spawn(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "child", onDuplicate: "reject" },
+        ),
       ).toThrow(/already active/);
 
       resolveChild!();
-      try { await childPromise; } catch { }
+      try {
+        await childPromise;
+      } catch {}
     });
 
     it("reject with no existing transaction creates new one normally", () => {
@@ -376,9 +474,12 @@ describe("TransactionalReducer", () => {
       engine.create({ id: "named" });
 
       expect(() =>
-        engine.run((tx) => {
-          tx.dispatch({ type: "inc" });
-        }, { id: "named" }),
+        engine.run(
+          (tx) => {
+            tx.dispatch({ type: "inc" });
+          },
+          { id: "named" },
+        ),
       ).toThrow(/already active/);
     });
   });
