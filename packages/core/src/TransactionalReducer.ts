@@ -11,7 +11,7 @@ import {
   type TransactionHandle,
   type TransactionInternal,
   type TransactionalReducerOptions,
-  type TransactionEngine,
+  type TransactionDeps,
 } from "./Transaction";
 
 export type {
@@ -26,7 +26,7 @@ export type {
 
 export type { Transaction };
 
-export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
+export class TransactionalReducer<S, A> {
   readonly reducer: (state: S, action: A) => S;
   readonly options: TransactionalReducerOptions<S> | undefined;
   readonly stateRef: Ref<S>;
@@ -34,7 +34,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   readonly transactionsRef: Ref<Map<string, TransactionInternal<S, A>>>;
   readonly generationRef: Ref<Map<string, number>>;
 
-  private _listeners = new Set<(state: S) => void>();
+  #listeners = new Set<(state: S) => void>();
 
   constructor(
     reducer: (state: S, action: A) => S,
@@ -54,15 +54,15 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   }
 
   subscribe(listener: (state: S) => void): () => void {
-    this._listeners.add(listener);
+    this.#listeners.add(listener);
     return () => {
-      this._listeners.delete(listener);
+      this.#listeners.delete(listener);
     };
   }
 
-  _notify(): void {
+  #notify(): void {
     const state = this.stateRef.current;
-    for (const listener of this._listeners) {
+    for (const listener of this.#listeners) {
       listener(state);
     }
   }
@@ -71,10 +71,10 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   // 这确保它们在回滚重放中被保留（txId:null，不在任何 rollbackSet 中）。
   // 无活跃事务时日志不必要——不可能发生回滚，因此跳过日志记录。
   dispatch(action: A): void {
-    if (this._hasActiveTransactions()) {
+    if (this.#hasActiveTransactions()) {
       this.actionLogRef.current.push({ action, txId: null, generation: 0 });
     }
-    this._applyAction(action);
+    this.#applyAction(action);
   }
 
   run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R {
@@ -85,8 +85,8 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
         throw new Error(`Cannot run: transaction "${options.id}" is already active`);
       }
     }
-    const tx = this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
-    return this._runWithTx(tx, task);
+    const tx = this.#createTx(options?.id, null, options?.onError ?? "rollback", strategy);
+    return this.#runWithTx(tx, task);
   }
 
   create(options?: TransactionOptions): TransactionHandle<A> {
@@ -95,7 +95,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
       const existing = this.transactionsRef.current.get(options.id);
       if (existing?.status === "active") return existing;
     }
-    return this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
+    return this.#createTx(options?.id, null, options?.onError ?? "rollback", strategy);
   }
 
   getTransaction(id: string): TransactionHandle<A> | undefined {
@@ -145,7 +145,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     }
 
     this.stateRef.current = replayState;
-    this._notify();
+    this.#notify();
 
     for (const id of allRollbackSet) {
       const record = this.transactionsRef.current.get(id);
@@ -191,7 +191,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     }
 
     // 阶段 6：最终清理
-    if (!this._hasActiveTransactions()) {
+    if (!this.#hasActiveTransactions()) {
       this.actionLogRef.current = [];
       this.transactionsRef.current.clear();
       this.generationRef.current.clear();
@@ -210,9 +210,9 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     }
   }
 
-  _applyAction(action: A): void {
+  #applyAction(action: A): void {
     this.stateRef.current = this.reducer(this.stateRef.current, action);
-    this._notify();
+    this.#notify();
   }
 
   // ─── _createTx ────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   //     （parentId === this.id 匹配）并错误地回滚它们
   // 这就是 runWithTx 在 _commit/_rollback 前检查过期的原因。
   // ────────────────────────────────────────────────────────────────────────
-  _createTx(
+  #createTx(
     id: string | undefined,
     parentId: string | null,
     onError: OnErrorStrategy,
@@ -276,11 +276,31 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
       }
     }
 
-    const generation = this._nextGeneration(txId);
+    const generation = this.#nextGeneration(txId);
     const snapshot = (this.options?.snapshot ?? structuredClone)(this.stateRef.current);
     const snapshotIndex = this.actionLogRef.current.length;
 
-    const tx = new Transaction(this, txId, parentId, onError, generation, snapshot, snapshotIndex);
+    const tx = new Transaction(
+      {
+        reducer: this.reducer,
+        options: this.options,
+        stateRef: this.stateRef,
+        actionLogRef: this.actionLogRef,
+        transactionsRef: this.transactionsRef,
+        generationRef: this.generationRef,
+        createTx: (id, parentId, onError, onDuplicate) =>
+          this.#createTx(id, parentId, onError, onDuplicate),
+        runWithTx: (tx, task) => this.#runWithTx(tx, task),
+        applyAction: (action) => this.#applyAction(action),
+        notify: () => this.#notify(),
+      },
+      txId,
+      parentId,
+      onError,
+      generation,
+      snapshot,
+      snapshotIndex,
+    );
 
     this.transactionsRef.current.set(txId, tx);
     return tx;
@@ -304,7 +324,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   //
   // 对于同步任务，执行期间不可能过期（无异步暂停），无需检查。
   // ────────────────────────────────────────────────────────────────────────
-  _runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R {
+  #runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R {
     try {
       const result = task(tx);
       if (result instanceof Promise) {
@@ -343,14 +363,14 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     }
   }
 
-  private _nextGeneration(txId: string): number {
+  #nextGeneration(txId: string): number {
     const prev = this.generationRef.current.get(txId) ?? 0;
     const next = prev + 1;
     this.generationRef.current.set(txId, next);
     return next;
   }
 
-  private _hasActiveTransactions(): boolean {
+  #hasActiveTransactions(): boolean {
     for (const tx of this.transactionsRef.current.values()) {
       if (tx.status === "active") return true;
     }

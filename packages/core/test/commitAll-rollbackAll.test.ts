@@ -246,6 +246,128 @@ describe("TransactionalReducer", () => {
       resolve();
       await promise.catch(() => {});
     });
+
+    it("rollbackAll preserves onError:commit children across multiple roots", async () => {
+      const engine = setup();
+      let resolve1!: () => void;
+      let resolve2!: () => void;
+      const p1 = new Promise<void>((r) => { resolve1 = r; });
+      const p2 = new Promise<void>((r) => { resolve2 = r; });
+
+      const promise1 = engine.run(async (tx) => {
+        tx.dispatch({ type: "inc" });
+        tx.spawn(async (child) => {
+          child.dispatch({ type: "inc" });
+          await p1;
+        }, { id: "child1", onError: "commit" });
+        tx.dispatch({ type: "inc" });
+      }, { id: "root1" });
+
+      const promise2 = engine.run(async (tx) => {
+        tx.dispatch({ type: "inc" });
+        tx.spawn(async (child) => {
+          child.dispatch({ type: "set", value: 100 });
+          await p2;
+        }, { id: "child2", onError: "commit" });
+        tx.dispatch({ type: "inc" });
+      }, { id: "root2" });
+
+      // root1: inc(→1) + child1.inc(→2) + inc(→3) = 3
+      // root2: inc(→4) + child2.set(100) + inc(→101)
+      expect(engine.state).toEqual({ count: 101 });
+
+      engine.rollbackAll();
+
+      // Children with onError:commit should be preserved as independent roots
+      // root1's and root2's dispatches are rolled back.
+      // child1.inc gives 1, child2.set:100 overwrites to 100
+      expect(engine.state).toEqual({ count: 100 });
+
+      resolve1();
+      resolve2();
+      await promise1.catch(() => {});
+      await promise2.catch(() => {});
+      expect(engine.state).toEqual({ count: 100 });
+    });
+  });
+
+  describe("finalize", () => {
+    it("rolls back active child transactions and commits", async () => {
+      const engine = setup();
+      const tx = engine.create({ id: "parent" });
+      tx.dispatch({ type: "inc" });
+      let resolveChild!: () => void;
+      const childDone = new Promise<void>((r) => { resolveChild = r; });
+      tx.spawn(async (child) => {
+        child.dispatch({ type: "inc" });
+        await childDone;
+      });
+      expect(engine.state).toEqual({ count: 2 });
+
+      tx.finalize();
+      // Active child should be rolled back, parent committed
+      expect(engine.state).toEqual({ count: 1 });
+      expect(tx.isStale()).toBe(true);
+
+      resolveChild();
+      await childDone.catch(() => {});
+    });
+
+    it("preserves committed children", () => {
+      const engine = setup();
+      const tx = engine.create({ id: "parent" });
+      tx.dispatch({ type: "inc" });
+      tx.spawn((child) => {
+        child.dispatch({ type: "inc" });
+      });
+      // spawn auto-commits sync child
+      expect(engine.state).toEqual({ count: 2 });
+
+      tx.finalize();
+      // Committed child's inc should be preserved, parent committed
+      expect(engine.state).toEqual({ count: 2 });
+      expect(tx.isStale()).toBe(true);
+    });
+
+    it("is a no-op when handle is stale", () => {
+      const engine = setup();
+      const tx = engine.create({ id: "tx" });
+      tx.dispatch({ type: "inc" });
+      tx.commit();
+      expect(tx.isStale()).toBe(true);
+
+      engine.dispatch({ type: "inc" });
+      tx.finalize();
+      expect(engine.state).toEqual({ count: 2 });
+    });
+
+    it("rolls back descendants recursively", async () => {
+      const engine = setup();
+      const tx = engine.create({ id: "root" });
+      tx.dispatch({ type: "inc" });
+      let resolveL1!: () => void;
+      let resolveL2!: () => void;
+      const l1Done = new Promise<void>((r) => { resolveL1 = r; });
+      const l2Done = new Promise<void>((r) => { resolveL2 = r; });
+      tx.spawn(async (l1) => {
+        l1.dispatch({ type: "inc" });
+        l1.spawn(async (l2) => {
+          l2.dispatch({ type: "inc" });
+          await l2Done;
+        }, { id: "l2" });
+        await l1Done;
+      }, { id: "l1" });
+      expect(engine.state).toEqual({ count: 3 });
+
+      tx.finalize();
+      // l1 and l2 are still active → rolled back
+      expect(engine.state).toEqual({ count: 1 });
+
+      resolveL1();
+      resolveL2();
+      await l1Done.catch(() => {});
+      await l2Done.catch(() => {});
+    });
   });
 
   describe("commitAll", () => {
