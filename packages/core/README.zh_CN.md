@@ -91,6 +91,8 @@ class TransactionalReducer<S, A> {
   run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
   create(options?: TransactionOptions): TransactionHandle<A>;
   getTransaction(id: string): TransactionHandle<A> | undefined;
+  commitAll(): void;
+  rollbackAll(): void;
 }
 ```
 
@@ -140,6 +142,32 @@ unsubscribe(); // 取消订阅
 
 按 id 查找事务。返回 `TransactionHandle` 或 `undefined`。
 
+#### `engine.commitAll()`
+
+提交所有活跃的根事务。每个根事务会先回滚其活跃子事务，再提交。无活跃事务时静默忽略。
+
+```ts
+const tx1 = engine.create({ id: "tx1" });
+const tx2 = engine.create({ id: "tx2" });
+tx1.dispatch({ type: "inc" });
+tx2.dispatch({ type: "inc" });
+
+engine.commitAll(); // tx1 和 tx2 都被提交
+```
+
+#### `engine.rollbackAll()`
+
+回滚所有活跃的根事务，级联回滚子事务。无活跃事务时静默忽略。
+
+```ts
+const tx1 = engine.create({ id: "tx1" });
+const tx2 = engine.create({ id: "tx2" });
+tx1.dispatch({ type: "inc" });
+tx2.dispatch({ type: "inc" });
+
+engine.rollbackAll(); // tx1 和 tx2 都被回滚，状态恢复
+```
+
 ### TransactionOptions
 
 ```ts
@@ -162,6 +190,7 @@ interface TransactionHandle<A> {
   spawn<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
   commit(): void;
   rollback(): void;
+  finalize(): void;
   isStale(): boolean;
   onCancel(callback: () => void): void;
 }
@@ -187,6 +216,17 @@ interface TransactionHandle<A> {
 #### `tx.rollback()`
 
 回滚事务。如果事务已过期，静默忽略。参见[回滚算法](#回滚算法的六个阶段)。
+
+#### `tx.finalize()`
+
+回滚所有活跃的子事务，然后提交该事务。这是 `run()` 和 `spawn()` 自动执行的"成功"生命周期——此处暴露为手动使用。如果事务已过期，静默忽略。
+
+```ts
+const tx = engine.create({ id: "edit" });
+tx.dispatch({ type: "inc" });
+// ... 异步工作完成，子事务可能仍活跃
+tx.finalize(); // 回滚活跃子事务，然后提交
+```
 
 #### `tx.isStale()`
 

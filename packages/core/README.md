@@ -144,7 +144,7 @@ Looks up a transaction by id. Returns a `TransactionHandle` or `undefined`.
 
 #### `engine.commitAll()`
 
-提交所有活跃的根事务。每个根事务会先回滚其活跃子事务，再提交。无活跃事务时静默忽略。
+Commits all active root transactions. Each root transaction rolls back its active child transactions first, then commits. Silently ignored when no transactions are active.
 
 ```ts
 const tx1 = engine.create({ id: "tx1" });
@@ -152,12 +152,12 @@ const tx2 = engine.create({ id: "tx2" });
 tx1.dispatch({ type: "inc" });
 tx2.dispatch({ type: "inc" });
 
-engine.commitAll(); // tx1 和 tx2 都被提交
+engine.commitAll(); // both tx1 and tx2 are committed
 ```
 
 #### `engine.rollbackAll()`
 
-回滚所有活跃的根事务，级联回滚子事务。无活跃事务时静默忽略。
+Rolls back all active root transactions, cascading to child transactions. Silently ignored when no transactions are active.
 
 ```ts
 const tx1 = engine.create({ id: "tx1" });
@@ -165,7 +165,7 @@ const tx2 = engine.create({ id: "tx2" });
 tx1.dispatch({ type: "inc" });
 tx2.dispatch({ type: "inc" });
 
-engine.rollbackAll(); // tx1 和 tx2 都被回滚，状态恢复
+engine.rollbackAll(); // both tx1 and tx2 are rolled back, state restored
 ```
 
 ### TransactionOptions
@@ -190,6 +190,7 @@ interface TransactionHandle<A> {
   spawn<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
   commit(): void;
   rollback(): void;
+  finalize(): void;
   isStale(): boolean;
   onCancel(callback: () => void): void;
 }
@@ -215,6 +216,17 @@ Commits the transaction. Silently ignored if the handle is stale.
 #### `tx.rollback()`
 
 Rolls back the transaction. Silently ignored if the handle is stale. See [Rollback Algorithm](#the-six-phases-of-the-rollback-algorithm).
+
+#### `tx.finalize()`
+
+Rolls back all active child transactions, then commits the transaction. This is the same "success" lifecycle that `run()` and `spawn()` perform automatically — here exposed for manual use. Silently ignored if the handle is stale.
+
+```ts
+const tx = engine.create({ id: "edit" });
+tx.dispatch({ type: "inc" });
+// ... async work done, children may still be active
+tx.finalize(); // rollback active children, then commit
+```
 
 #### `tx.isStale()`
 

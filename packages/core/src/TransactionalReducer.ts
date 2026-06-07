@@ -9,6 +9,7 @@ import {
   type OnDuplicateStrategy,
   type TransactionOptions,
   type TransactionHandle,
+  type TransactionInternal,
   type TransactionalReducerOptions,
   type TransactionEngine,
 } from "./Transaction";
@@ -30,7 +31,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   readonly options: TransactionalReducerOptions<S> | undefined;
   readonly stateRef: Ref<S>;
   readonly actionLogRef: Ref<ActionLogEntry<A>[]>;
-  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>;
+  readonly transactionsRef: Ref<Map<string, TransactionInternal<S, A>>>;
   readonly generationRef: Ref<Map<string, number>>;
 
   private _listeners = new Set<(state: S) => void>();
@@ -102,7 +103,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   }
 
   rollbackAll(): void {
-    const roots: Transaction<S, A>[] = [];
+    const roots: TransactionInternal<S, A>[] = [];
     for (const tx of this.transactionsRef.current.values()) {
       if (tx.parentId === null && tx.status === "active") {
         roots.push(tx);
@@ -118,7 +119,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
 
     for (const tx of roots) {
       if (tx.isStale()) continue;
-      const { rollbackSet, preserveSet } = tx._classifyRollback();
+      const { rollbackSet, preserveSet } = tx.classifyRollback();
       for (const id of rollbackSet) allRollbackSet.add(id);
       for (const id of preserveSet) allPreserveSet.add(id);
       if (tx.snapshotIndex < earliestSnapshotIndex) {
@@ -198,18 +199,14 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   }
 
   commitAll(): void {
-    const roots: Transaction<S, A>[] = [];
+    const roots: TransactionInternal<S, A>[] = [];
     for (const tx of this.transactionsRef.current.values()) {
       if (tx.parentId === null && tx.status === "active") {
         roots.push(tx);
       }
     }
     for (const tx of roots) {
-      tx._rollbackActiveDescendants(true);
-      tx._commit(true);
-    }
-    if (roots.length > 0) {
-      roots[0]!._cleanupIfDone();
+      tx.finalize();
     }
   }
 
@@ -250,11 +247,10 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     if (existing?.status === "active") {
       switch (onDuplicate) {
         case "rollback":
-          existing._rollback();
+          existing.rollback();
           break;
         case "commit":
-          existing._rollbackActiveDescendants();
-          existing._commit();
+          existing.finalize();
           if (existing.parentId !== null) {
             for (let i = existing.snapshotIndex; i < this.actionLogRef.current.length; i++) {
               const entry = this.actionLogRef.current[i]!;
@@ -317,40 +313,31 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
             // 过期检查：如果事务已被替换（例如第二次 run 使用相同 id），
             // 跳过提交——新事务现在拥有该 id。
             if (!tx.isStale()) {
-              tx._rollbackActiveDescendants();
-              tx._commit();
+              tx.finalize();
             }
             return r;
           },
           (e) => {
             if (tx.onError === "commit") {
-              // onError:"commit" 表示出错时保留变更。
-              // 仍需过期检查——过期句柄绝不能提交
-              // （会从 transactionsRef 删除新事务）。
               if (!tx.isStale()) {
-                tx._rollbackActiveDescendants();
-                tx._commit();
+                tx.finalize();
               }
             } else {
-              // _rollback 内部有自己的过期检查，
-              // 此处无需额外检查。
-              tx._rollback();
+              tx.rollback();
             }
             throw e;
           },
         ) as unknown as R;
       }
       // 同步成功：同步执行期间不可能过期
-      tx._rollbackActiveDescendants();
-      tx._commit();
+      tx.finalize();
       return result;
     } catch (e) {
       // 同步错误：同样不可能过期
       if (tx.onError === "commit") {
-        tx._rollbackActiveDescendants();
-        tx._commit();
+        tx.finalize();
       } else {
-        tx._rollback();
+        tx.rollback();
       }
       throw e;
     }

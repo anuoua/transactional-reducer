@@ -35,8 +35,21 @@ export interface TransactionHandle<A> {
   spawn<R>(task: (tx: TransactionHandle<A>) => R, options?: SpawnOptions): R;
   commit(): void;
   rollback(): void;
+  finalize(): void;
   isStale(): boolean;
   onCancel(callback: () => void): void;
+}
+
+// Transaction 内部接口，由引擎使用而非公开 API。
+// Transaction 实现此接口，TransactionalReducer 通过其访问内部方法。
+export interface TransactionInternal<S, A> extends TransactionHandle<A> {
+  parentId: string | null;
+  snapshot: S;
+  readonly snapshotIndex: number;
+  status: "active" | "committed" | "rolledback";
+  cancelCallbacks: (() => void)[];
+
+  classifyRollback(): { rollbackSet: Set<string>; preserveSet: Set<string> };
 }
 
 export interface TransactionalReducerOptions<S = any> {
@@ -52,15 +65,15 @@ export interface TransactionEngine<S, A> {
   readonly options: TransactionalReducerOptions<S> | undefined;
   readonly stateRef: Ref<S>;
   readonly actionLogRef: Ref<ActionLogEntry<A>[]>;
-  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>;
+  readonly transactionsRef: Ref<Map<string, TransactionInternal<S, A>>>;
   readonly generationRef: Ref<Map<string, number>>;
   _createTx(
     id: string | undefined,
     parentId: string | null,
     onError: OnErrorStrategy,
     onDuplicate: OnDuplicateStrategy,
-  ): Transaction<S, A>;
-  _runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R;
+  ): TransactionInternal<S, A>;
+  _runWithTx<R>(tx: TransactionInternal<S, A>, task: (tx: TransactionHandle<A>) => R): R;
   _applyAction(action: A): void;
   _notify(): void;
 }
@@ -71,7 +84,7 @@ export function _generateId(): string {
 
 export function _getAllDescendants<S>(
   txId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): string[] {
   const result: string[] = [];
   for (const [, tx] of transactions) {
@@ -85,7 +98,7 @@ export function _getAllDescendants<S>(
 export function _isDescendantOf<S>(
   candidateTxId: string | null,
   ancestorTxId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): boolean {
   if (candidateTxId === null) return false;
   let current: string | null = candidateTxId;
@@ -99,7 +112,7 @@ export function _isDescendantOf<S>(
 
 export function _cleanupCommittedDescendants<S>(
   parentId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): void {
   for (const [id, tx] of transactions) {
     if (tx.parentId === parentId && tx.status === "committed") {
@@ -122,7 +135,7 @@ export function _cleanupCommittedDescendants<S>(
 // 因为它的父事务已不存在。
 // ────────────────────────────────────────────────────────────────────────────
 
-export class Transaction<S, A> implements TransactionHandle<A> {
+export class Transaction<S, A> implements TransactionHandle<A>, TransactionInternal<S, A> {
   readonly id: string;
   parentId: string | null;
   readonly onError: OnErrorStrategy;
@@ -217,12 +230,18 @@ export class Transaction<S, A> implements TransactionHandle<A> {
 
   commit(): void {
     if (this.isStale()) return;
-    this._commit();
+    this.#commit();
   }
 
   rollback(): void {
     if (this.isStale()) return;
-    this._rollback();
+    this.#rollback();
+  }
+
+  finalize(): void {
+    if (this.isStale()) return;
+    this.#rollbackActiveDescendants();
+    this.#commit();
   }
 
   // ─── _commit ──────────────────────────────────────────────────────────
@@ -241,7 +260,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   //   4. 如果没有活跃事务剩余，清空整个 action log 和事务映射——
   //      不可能再发生回滚，日志是不必要的开销。
   // ────────────────────────────────────────────────────────────────────────
-  _commit(skipCleanup = false): void {
+  #commit(): void {
     if (this.parentId !== null) {
       this.status = "committed";
     } else {
@@ -265,7 +284,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
       this.engine.transactionsRef.current.delete(this.id);
       _cleanupCommittedDescendants(this.id, this.engine.transactionsRef.current);
 
-      if (!skipCleanup) this._cleanupIfDone();
+      this.#cleanupIfDone();
     }
   }
 
@@ -319,12 +338,12 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   // 然后对每个活跃保留事务调用 _cleanupCommittedDescendants，
   // 清理其子树中已提交的子事务。现在安全了，因为保留事务已是独立根。
   // ────────────────────────────────────────────────────────────────────────
-  // ─── _classifyRollback ──────────────────────────────────────────────────
+  // ─── classifyRollback ──────────────────────────────────────────────────
   //
   // 分类后代并标记 action log（阶段 1-3）。
   // 返回 rollbackSet 和 preserveSet，供调用方统一重放。
   // ────────────────────────────────────────────────────────────────────────
-  _classifyRollback(): { rollbackSet: Set<string>; preserveSet: Set<string> } {
+  classifyRollback(): { rollbackSet: Set<string>; preserveSet: Set<string> } {
     const descendants = _getAllDescendants(this.id, this.engine.transactionsRef.current);
 
     const preserveSet = new Set<string>();
@@ -388,10 +407,10 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     return { rollbackSet, preserveSet };
   }
 
-  _rollback(skipCleanup = false): void {
+  #rollback(): void {
     if (this.isStale()) return;
 
-    const { rollbackSet, preserveSet } = this._classifyRollback();
+    const { rollbackSet, preserveSet } = this.classifyRollback();
 
     // 阶段 4：从快照重放，跳过已回滚的 action
     let replayState = this.snapshot;
@@ -464,13 +483,11 @@ export class Transaction<S, A> implements TransactionHandle<A> {
       }
     }
 
-    if (!skipCleanup) this._cleanupIfDone();
+    this.#cleanupIfDone();
   }
-
-  // 仅回滚直接的活跃子事务，而非所有后代。
-  // 每个子事务的 _rollback() 递归处理自己的子树，
+  // 每个子事务的 #rollback() 递归处理自己的子树，
   // 包括自己的 onError:"commit" 边界。
-  _rollbackActiveDescendants(skipCleanup = false): void {
+  #rollbackActiveDescendants(): void {
     const activeChildren: string[] = [];
     for (const [, tx] of this.engine.transactionsRef.current) {
       if (tx.parentId === this.id && tx.status === "active") {
@@ -480,7 +497,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     for (const id of activeChildren) {
       const tx = this.engine.transactionsRef.current.get(id);
       if (tx?.status === "active") {
-        tx._rollback(skipCleanup);
+        (tx as Transaction<S, A>).#rollback();
       }
     }
     let replayState = this.snapshot;
@@ -500,7 +517,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     return false;
   }
 
-  _cleanupIfDone(): void {
+  #cleanupIfDone(): void {
     if (!this._hasActiveTransactions()) {
       this.engine.actionLogRef.current = [];
       this.engine.transactionsRef.current.clear();
