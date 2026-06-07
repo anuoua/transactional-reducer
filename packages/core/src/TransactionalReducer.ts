@@ -101,6 +101,118 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     return this.transactionsRef.current.get(id);
   }
 
+  rollbackAll(): void {
+    const roots: Transaction<S, A>[] = [];
+    for (const tx of this.transactionsRef.current.values()) {
+      if (tx.parentId === null && tx.status === "active") {
+        roots.push(tx);
+      }
+    }
+    if (roots.length === 0) return;
+
+    // 阶段 1-3：对所有根事务统一分类并标记 action log
+    const allRollbackSet = new Set<string>();
+    const allPreserveSet = new Set<string>();
+    let earliestSnapshotIndex = Infinity;
+    let earliestSnapshot: S | undefined;
+
+    for (const tx of roots) {
+      if (tx.isStale()) continue;
+      const { rollbackSet, preserveSet } = tx._classifyRollback();
+      for (const id of rollbackSet) allRollbackSet.add(id);
+      for (const id of preserveSet) allPreserveSet.add(id);
+      if (tx.snapshotIndex < earliestSnapshotIndex) {
+        earliestSnapshotIndex = tx.snapshotIndex;
+        earliestSnapshot = tx.snapshot;
+      }
+    }
+
+    if (allRollbackSet.size === 0) return;
+
+    // 阶段 4：从最早的快照统一重放
+    let replayState = earliestSnapshot as S;
+    for (let i = earliestSnapshotIndex; i < this.actionLogRef.current.length; i++) {
+      const entry = this.actionLogRef.current[i]!;
+      if (entry.skipped) continue;
+      replayState = this.reducer(replayState, entry.action);
+    }
+
+    // 标记 rolledback、触发 onCancel、删除记录
+    for (const id of allRollbackSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record) record.status = "rolledback";
+    }
+
+    this.stateRef.current = replayState;
+    this._notify();
+
+    for (const id of allRollbackSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record?.cancelCallbacks.length) {
+        const callbacks = [...record.cancelCallbacks];
+        record.cancelCallbacks = [];
+        for (const cb of callbacks) cb();
+      }
+    }
+
+    for (const id of allRollbackSet) {
+      this.transactionsRef.current.delete(id);
+    }
+
+    // 阶段 5：分离保留的事务
+    for (const id of allPreserveSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record) {
+        if (record.status === "committed") {
+          this.transactionsRef.current.delete(id);
+        } else if (record.status === "active") {
+          const needsDetach = record.parentId !== null && allRollbackSet.has(record.parentId);
+          if (needsDetach) {
+            record.parentId = null;
+            let newSnapshot = earliestSnapshot as S;
+            for (let i = earliestSnapshotIndex; i < record.snapshotIndex; i++) {
+              const entry = this.actionLogRef.current[i]!;
+              if (entry.skipped) continue;
+              newSnapshot = this.reducer(newSnapshot, entry.action);
+            }
+            record.snapshot = newSnapshot;
+          }
+        }
+      }
+    }
+
+    // 清理保留子树中已提交的后代
+    for (const id of allPreserveSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record?.status === "active") {
+        _cleanupCommittedDescendants(id, this.transactionsRef.current);
+      }
+    }
+
+    // 阶段 6：最终清理
+    if (!this._hasActiveTransactions()) {
+      this.actionLogRef.current = [];
+      this.transactionsRef.current.clear();
+      this.generationRef.current.clear();
+    }
+  }
+
+  commitAll(): void {
+    const roots: Transaction<S, A>[] = [];
+    for (const tx of this.transactionsRef.current.values()) {
+      if (tx.parentId === null && tx.status === "active") {
+        roots.push(tx);
+      }
+    }
+    for (const tx of roots) {
+      tx._rollbackActiveDescendants(true);
+      tx._commit(true);
+    }
+    if (roots.length > 0) {
+      roots[0]!._cleanupIfDone();
+    }
+  }
+
   _applyAction(action: A): void {
     this.stateRef.current = this.reducer(this.stateRef.current, action);
     this._notify();

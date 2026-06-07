@@ -91,6 +91,8 @@ class TransactionalReducer<S, A> {
   run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
   create(options?: TransactionOptions): TransactionHandle<A>;
   getTransaction(id: string): TransactionHandle<A> | undefined;
+  commitAll(): void;
+  rollbackAll(): void;
 }
 ```
 
@@ -139,6 +141,32 @@ unsubscribe(); // 取消订阅
 #### `engine.getTransaction(id)`
 
 按 id 查找事务。返回 `TransactionHandle` 或 `undefined`。
+
+#### `engine.commitAll()`
+
+提交所有活跃的根事务。每个根事务会先回滚其活跃子事务，再提交。无活跃事务时静默忽略。
+
+```ts
+const tx1 = engine.create({ id: "tx1" });
+const tx2 = engine.create({ id: "tx2" });
+tx1.dispatch({ type: "inc" });
+tx2.dispatch({ type: "inc" });
+
+engine.commitAll(); // tx1 和 tx2 都被提交
+```
+
+#### `engine.rollbackAll()`
+
+回滚所有活跃的根事务，级联回滚子事务。无活跃事务时静默忽略。
+
+```ts
+const tx1 = engine.create({ id: "tx1" });
+const tx2 = engine.create({ id: "tx2" });
+tx1.dispatch({ type: "inc" });
+tx2.dispatch({ type: "inc" });
+
+engine.rollbackAll(); // tx1 和 tx2 都被回滚，状态恢复
+```
 
 ### TransactionOptions
 
