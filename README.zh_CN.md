@@ -46,10 +46,10 @@ React 用法：
 import { useTransactionalReducer } from "@transactional-reducer/react";
 
 function Counter() {
-  const [state, api] = useTransactionalReducer(reducer, { count: 0 });
+  const [state, engine] = useTransactionalReducer(reducer, { count: 0 });
 
   const handleOptimisticInc = () =>
-    api.run(async (tx) => {
+    engine.run(async (tx) => {
       tx.dispatch({ type: "inc" });
       await fetch("/api/inc");
     });

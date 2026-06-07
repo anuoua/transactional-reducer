@@ -26,14 +26,14 @@ const reducer = (state: State, action: Action): State => {
 };
 
 function Counter() {
-  const [state, api] = useTransactionalReducer(reducer, { count: 0 });
+  const [state, engine] = useTransactionalReducer(reducer, { count: 0 });
 
   // non-transactional dispatch — cannot be rolled back
-  const handleInc = () => api.dispatch({ type: "inc" });
+  const handleInc = () => engine.dispatch({ type: "inc" });
 
   // transactional dispatch — can be rolled back
   const handleOptimisticInc = () =>
-    api.run(async (tx) => {
+    engine.run(async (tx) => {
       tx.dispatch({ type: "inc" }); // optimistic update to UI
       await fetch("/api/inc");       // async request
       // success → auto-commit; failure → auto-rollback
@@ -60,55 +60,53 @@ function useTransactionalReducer<S, A>(
   reducer: (state: S, action: A) => S,
   initialState: S,
   options?: TransactionalReducerOptions<S>,
-): [
-  S,
-  {
-    dispatch: (action: A) => void;
-    run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
-    create(options?: TransactionOptions): TransactionHandle<A>;
-    getDraft(): S;
-    getTransaction(id: string): TransactionHandle<A> | undefined;
-  },
-];
+): [S, TransactionalReducer<S, A>];
 ```
+
+The second element of the tuple is a [`TransactionalReducer`](../core/README.md#transactionalreducer) engine instance — the same object used in framework-agnostic code. All engine methods are available:
+
+- `engine.state` — current state (synchronous)
+- `engine.dispatch(action)` — non-transactional dispatch
+- `engine.run(task, options?)` — start a root transaction with automatic lifecycle management
+- `engine.create(options?)` — manually create a root transaction
+- `engine.getTransaction(id)` — find a transaction by ID
+- `engine.commitAll()` — commit all active root transactions
+- `engine.rollbackAll()` — roll back all active root transactions
+- `engine.subscribe(listener)` — subscribe to state changes
 
 Types such as `TransactionalReducerOptions`, `TransactionOptions`, and `TransactionHandle` are all exported from [`@transactional-reducer/core`](../core/README.md#api-reference).
 
 ### Return Value
 
-Returns a tuple `[state, api]`:
+Returns a tuple `[state, engine]`:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `state` | `S` | Current state (driven by React's render cycle) |
-| `api.dispatch` | `(action: A) => void` | Non-transactional dispatch; cannot be rolled back |
-| `api.run` | See below | Starts a root transaction with automatic lifecycle management |
-| `api.create` | See below | Manually creates a root transaction |
-| `api.getDraft` | `() => S` | Returns the latest draft state (bypasses React batching delays) |
-| `api.getTransaction` | `(id: string) => TransactionHandle \| undefined` | Finds a transaction by ID |
+| `engine` | `TransactionalReducer<S, A>` | The engine instance — access all methods directly |
 
-### `api.run(task, options?)`
+### `engine.run(task, options?)`
 
 Starts a root transaction with automatic lifecycle management. Behaves identically to [`engine.run()`](../core/README.md#engineruntask-options).
 
-### `api.create(options?)`
+### `engine.create(options?)`
 
 Manually creates a root transaction. Behaves identically to [`engine.create()`](../core/README.md#enginecreateoptions).
 
-### `api.getDraft()`
+### `engine.state`
 
-Returns the engine's instantaneous state. React state updates may be batched or deferred, so `state` might be stale inside async callbacks. `getDraft()` always returns the most up-to-date value.
+Returns the engine's instantaneous state. React state updates may be batched or deferred, so `state` (the first tuple element) might be stale inside async callbacks. `engine.state` always returns the most up-to-date value.
 
 ```tsx
-await api.run(async (tx) => {
+await engine.run(async (tx) => {
   tx.dispatch({ type: "inc" });
   // state.count may still be the old value (React batching)
-  const currentCount = api.getDraft().count; // latest value
+  const currentCount = engine.state.count; // latest value
   tx.dispatch({ type: "set", value: currentCount * 2 });
 });
 ```
 
-### `api.getTransaction(id)`
+### `engine.getTransaction(id)`
 
 Finds a transaction by ID. Equivalent to [`engine.getTransaction()`](../core/README.md#enginegettransactionid).
 
@@ -120,7 +118,7 @@ Finds a transaction by ID. Equivalent to [`engine.getTransaction()`](../core/REA
 
 ```tsx
 async function handleSave() {
-  await api.run(async (tx) => {
+  await engine.run(async (tx) => {
     tx.dispatch({ type: "setSaving", value: true });
     tx.dispatch({ type: "updateData", value: newData });
     await saveToServer(newData);
@@ -135,7 +133,7 @@ Assign an `id` to a transaction; a new transaction with the same ID will automat
 
 ```tsx
 async function handleSearch(query: string) {
-  await api.run(async (tx) => {
+  await engine.run(async (tx) => {
     const ac = new AbortController();
     tx.onCancel(() => ac.abort());
     tx.dispatch({ type: "setLoading", value: true });
@@ -149,11 +147,11 @@ async function handleSearch(query: string) {
 
 ```tsx
 function EditForm() {
-  const [state, api] = useTransactionalReducer(reducer, initialState);
+  const [state, engine] = useTransactionalReducer(reducer, initialState);
   const txRef = useRef<TransactionHandle<Action>>();
 
   const startEditing = () => {
-    txRef.current = api.create({ id: "edit-form" });
+    txRef.current = engine.create({ id: "edit-form" });
   };
 
   const updateField = (field: string, value: string) => {
@@ -162,7 +160,7 @@ function EditForm() {
 
   const save = async () => {
     try {
-      await saveProfile(api.getDraft());
+      await saveProfile(engine.state);
       txRef.current?.commit();
     } catch {
       txRef.current?.rollback();
@@ -178,7 +176,7 @@ function EditForm() {
 ### 4. Nested Transactions (spawn)
 
 ```tsx
-await api.run(async (tx) => {
+await engine.run(async (tx) => {
   tx.dispatch({ type: "setSubmitting", value: true });
 
   await tx.spawn(async (childTx) => {
@@ -196,12 +194,12 @@ await api.run(async (tx) => {
 
 ```tsx
 const [result1, result2] = await Promise.all([
-  api.run(async (tx) => {
+  engine.run(async (tx) => {
     tx.dispatch({ type: "setUsersLoading", value: true });
     const users = await fetchUsers();
     tx.dispatch({ type: "setUsers", value: users });
   }, { id: "fetch-users" }),
-  api.run(async (tx) => {
+  engine.run(async (tx) => {
     tx.dispatch({ type: "setPostsLoading", value: true });
     const posts = await fetchPosts();
     tx.dispatch({ type: "setPosts", value: posts });
@@ -221,8 +219,8 @@ const [result1, result2] = await Promise.all([
 
 ## React-Specific Notes
 
-1. **React batching**: Inside async callbacks, React's `state` may not be up to date. Use `api.getDraft()` to get the instantaneous state.
+1. **React batching**: Inside async callbacks, React's `state` may not be up to date. Use `engine.state` to get the instantaneous state.
 
-2. **API stability**: The `api` object and its methods (`dispatch`, `run`, etc.) have stable references throughout the component's lifecycle, so they can safely be omitted from `useEffect`/`useCallback` dependency arrays.
+2. **Engine stability**: The `engine` reference is stable throughout the component's lifecycle (backed by `useRef`), so it can safely be omitted from `useEffect`/`useCallback` dependency arrays.
 
-3. **Component isolation**: Each component instance holds an independent engine instance (via `useRef`); state is not shared across components.
+3. **Component isolation**: Each component instance holds an independent engine instance; state is not shared across components.
