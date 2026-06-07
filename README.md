@@ -1,24 +1,24 @@
 # transactional-reducer
 
-为 reducer 模式提供事务（Transaction）支持的状态管理库。允许你将一组 dispatch 操作包裹在事务中，支持**提交（commit）**和**回滚（rollback）**，就像数据库事务一样。
+A state management library that adds **transaction** support to the reducer pattern. It lets you wrap a group of dispatch operations in a transaction with **commit** and **rollback** semantics — just like database transactions.
 
-## 特性
+## Features
 
-- **乐观更新 + 自动回滚**：先乐观地更新状态，异步操作失败时自动撤销变更
-- **可取消的异步任务**：相同 id 的事务自动取消前一个，避免竞态条件
-- **灵活的去重策略**：`rollback`、`commit`、`reuse`、`reject` 四种策略
-- **嵌套事务**：支持父子事务，子事务可独立提交或随父事务回滚
-- **提交边界**：`onError: "commit"` 的子事务在父事务回滚时被保留
-- **框架无关**：核心引擎可用于任何 JavaScript 环境
+- **Optimistic updates with automatic rollback**: Optimistically update state first; changes are automatically reverted if the async operation fails
+- **Cancellable async tasks**: A new transaction with the same ID automatically cancels the previous one, preventing race conditions
+- **Flexible deduplication strategies**: Four strategies — `rollback`, `commit`, `reuse`, and `reject`
+- **Nested transactions**: Parent and child transactions; children can commit independently or roll back with their parent
+- **Commit boundaries**: A child transaction with `onError: "commit"` is preserved even when its parent rolls back
+- **Framework-agnostic**: The core engine works in any JavaScript environment
 
-## 包
+## Packages
 
-| 包 | 说明 |
+| Package | Description |
 |---|---|
-| [`@transactional-reducer/core`](packages/core/README.md) | 核心引擎，框架无关 |
-| [`@transactional-reducer/react`](packages/react/README.md) | React Hook（`useTransactionalReducer`） |
+| [`@transactional-reducer/core`](packages/core/README.md) | Core engine — framework-agnostic |
+| [`@transactional-reducer/react`](packages/react/README.md) | React Hook (`useTransactionalReducer`) |
 
-## 快速开始
+## Quick Start
 
 ```ts
 import { TransactionalReducer } from "@transactional-reducer/core";
@@ -32,15 +32,15 @@ const reducer = (state, action) => {
 
 const engine = new TransactionalReducer(reducer, { count: 0 });
 
-// 乐观更新 + 自动回滚
+// Optimistic update with automatic rollback
 await engine.run(async (tx) => {
   tx.dispatch({ type: "inc" });
   await fetch("/api/inc");
-  // 成功 → 自动 commit；失败 → 自动 rollback
+  // Success → auto-commit; failure → auto-rollback
 });
 ```
 
-React 用法：
+React usage:
 
 ```tsx
 import { useTransactionalReducer } from "@transactional-reducer/react";
@@ -57,13 +57,13 @@ function Counter() {
   return (
     <div>
       <p>{state.count}</p>
-      <button onClick={handleOptimisticInc}>+1 (乐观)</button>
+      <button onClick={handleOptimisticInc}>+1 (optimistic)</button>
     </div>
   );
 }
 ```
 
-## 开发
+## Development
 
 ```bash
 pnpm install
