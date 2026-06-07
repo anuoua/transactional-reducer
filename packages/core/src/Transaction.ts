@@ -35,8 +35,21 @@ export interface TransactionHandle<A> {
   spawn<R>(task: (tx: TransactionHandle<A>) => R, options?: SpawnOptions): R;
   commit(): void;
   rollback(): void;
+  finalize(): void;
   isStale(): boolean;
   onCancel(callback: () => void): void;
+}
+
+// Transaction 内部接口，由引擎使用而非公开 API。
+// Transaction 实现此接口，TransactionalReducer 通过其访问内部方法。
+export interface TransactionInternal<S, A> extends TransactionHandle<A> {
+  parentId: string | null;
+  snapshot: S;
+  readonly snapshotIndex: number;
+  status: "active" | "committed" | "rolledback";
+  cancelCallbacks: (() => void)[];
+
+  classifyRollback(): { rollbackSet: Set<string>; preserveSet: Set<string> };
 }
 
 export interface TransactionalReducerOptions<S = any> {
@@ -45,24 +58,19 @@ export interface TransactionalReducerOptions<S = any> {
   onDuplicate?: OnDuplicateStrategy;
 }
 
-// Transaction 引擎接口，定义 Transaction 对引擎的依赖。
-// 由 TransactionalReducer 类实现。
-export interface TransactionEngine<S, A> {
+// Transaction 能力依赖，由 TransactionalReducer 通过闭包注入。
+// 不在公开 API 中导出。
+export interface TransactionDeps<S, A> {
   readonly reducer: (state: S, action: A) => S;
   readonly options: TransactionalReducerOptions<S> | undefined;
   readonly stateRef: Ref<S>;
   readonly actionLogRef: Ref<ActionLogEntry<A>[]>;
-  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>;
+  readonly transactionsRef: Ref<Map<string, TransactionInternal<S, A>>>;
   readonly generationRef: Ref<Map<string, number>>;
-  _createTx(
-    id: string | undefined,
-    parentId: string | null,
-    onError: OnErrorStrategy,
-    onDuplicate: OnDuplicateStrategy,
-  ): Transaction<S, A>;
-  _runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R;
-  _applyAction(action: A): void;
-  _notify(): void;
+  createTx: (id: string | undefined, parentId: string | null, onError: OnErrorStrategy, onDuplicate: OnDuplicateStrategy) => Transaction<S, A>;
+  runWithTx: <R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R) => R;
+  applyAction: (action: A) => void;
+  notify: () => void;
 }
 
 export function _generateId(): string {
@@ -71,7 +79,7 @@ export function _generateId(): string {
 
 export function _getAllDescendants<S>(
   txId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): string[] {
   const result: string[] = [];
   for (const [, tx] of transactions) {
@@ -85,7 +93,7 @@ export function _getAllDescendants<S>(
 export function _isDescendantOf<S>(
   candidateTxId: string | null,
   ancestorTxId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): boolean {
   if (candidateTxId === null) return false;
   let current: string | null = candidateTxId;
@@ -99,7 +107,7 @@ export function _isDescendantOf<S>(
 
 export function _cleanupCommittedDescendants<S>(
   parentId: string,
-  transactions: Map<string, Transaction<S, any>>,
+  transactions: Map<string, TransactionInternal<S, any>>,
 ): void {
   for (const [id, tx] of transactions) {
     if (tx.parentId === parentId && tx.status === "committed") {
@@ -122,7 +130,7 @@ export function _cleanupCommittedDescendants<S>(
 // 因为它的父事务已不存在。
 // ────────────────────────────────────────────────────────────────────────────
 
-export class Transaction<S, A> implements TransactionHandle<A> {
+export class Transaction<S, A> implements TransactionHandle<A>, TransactionInternal<S, A> {
   readonly id: string;
   parentId: string | null;
   readonly onError: OnErrorStrategy;
@@ -132,10 +140,10 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   status: "active" | "committed" | "rolledback" = "active";
   cancelCallbacks: (() => void)[] = [];
 
-  private engine: TransactionEngine<S, A>;
+  deps: TransactionDeps<S, A>;
 
   constructor(
-    engine: TransactionEngine<S, A>,
+    deps: TransactionDeps<S, A>,
     id: string,
     parentId: string | null,
     onError: OnErrorStrategy,
@@ -143,7 +151,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     snapshot: S,
     snapshotIndex: number,
   ) {
-    this.engine = engine;
+    this.deps = deps;
     this.id = id;
     this.parentId = parentId;
     this.onError = onError;
@@ -159,7 +167,7 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   // 所以 `current !== this` 为 true；提交后 status 变化，
   // 所以 `this.status !== "active"` 为 true。
   isStale(): boolean {
-    const current = this.engine.transactionsRef.current.get(this.id);
+    const current = this.deps.transactionsRef.current.get(this.id);
     return current !== this || this.status !== "active";
   }
 
@@ -173,12 +181,12 @@ export class Transaction<S, A> implements TransactionHandle<A> {
 
   dispatch(action: A): void {
     if (this.isStale()) return;
-    this.engine.actionLogRef.current.push({
+    this.deps.actionLogRef.current.push({
       action,
       txId: this.id,
       generation: this.generation,
     });
-    this.engine._applyAction(action);
+    this.deps.applyAction(action);
   }
 
   // spawn 在创建子事务前执行三重过期检查：
@@ -189,11 +197,11 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   // 旧句柄的 generation 不匹配 generationRef 中的新 generation。
   // 没有此检查，过期句柄可能在新事务下派生子事务。
   spawn<R>(task: (tx: TransactionHandle<A>) => R, options?: SpawnOptions): R {
-    const current = this.engine.transactionsRef.current.get(this.id);
+    const current = this.deps.transactionsRef.current.get(this.id);
     if (
       current !== this ||
       this.status !== "active" ||
-      this.generation !== this.engine.generationRef.current.get(this.id)
+      this.generation !== this.deps.generationRef.current.get(this.id)
     ) {
       throw new Error(`Cannot spawn from transaction "${this.id}": parent is no longer active`);
     }
@@ -204,25 +212,31 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     // 之前的 validate_name 任务。
     const childId = options?.id ?? _generateId();
     const childOnError = options?.onError ?? "rollback";
-    const childOnDuplicate = options?.onDuplicate ?? this.engine.options?.onDuplicate ?? "rollback";
+    const childOnDuplicate = options?.onDuplicate ?? this.deps.options?.onDuplicate ?? "rollback";
     if (childOnDuplicate === "reuse" && options?.id) {
-      const existingChild = this.engine.transactionsRef.current.get(options.id);
+      const existingChild = this.deps.transactionsRef.current.get(options.id);
       if (existingChild?.status === "active") {
         throw new Error(`Cannot spawn: transaction "${options.id}" is already active`);
       }
     }
-    const childTx = this.engine._createTx(childId, this.id, childOnError, childOnDuplicate);
-    return this.engine._runWithTx(childTx, task);
+    const childTx = this.deps.createTx(childId, this.id, childOnError, childOnDuplicate);
+    return this.deps.runWithTx(childTx, task);
   }
 
   commit(): void {
     if (this.isStale()) return;
-    this._commit();
+    this.#commit();
   }
 
   rollback(): void {
     if (this.isStale()) return;
-    this._rollback();
+    this.#rollback();
+  }
+
+  finalize(): void {
+    if (this.isStale()) return;
+    this.#rollbackActiveDescendants();
+    this.#commit();
   }
 
   // ─── _commit ──────────────────────────────────────────────────────────
@@ -241,20 +255,20 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   //   4. 如果没有活跃事务剩余，清空整个 action log 和事务映射——
   //      不可能再发生回滚，日志是不必要的开销。
   // ────────────────────────────────────────────────────────────────────────
-  _commit(): void {
+  #commit(): void {
     if (this.parentId !== null) {
       this.status = "committed";
     } else {
       this.status = "committed";
 
-      for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-        const entry = this.engine.actionLogRef.current[i]!;
+      for (let i = this.snapshotIndex; i < this.deps.actionLogRef.current.length; i++) {
+        const entry = this.deps.actionLogRef.current[i]!;
         if (entry.skipped) continue;
         if (
           entry.txId === this.id ||
-          _isDescendantOf(entry.txId, this.id, this.engine.transactionsRef.current)
+          _isDescendantOf(entry.txId, this.id, this.deps.transactionsRef.current)
         ) {
-          this.engine.actionLogRef.current[i] = {
+          this.deps.actionLogRef.current[i] = {
             action: entry.action,
             txId: null,
             generation: 0,
@@ -262,14 +276,10 @@ export class Transaction<S, A> implements TransactionHandle<A> {
         }
       }
 
-      this.engine.transactionsRef.current.delete(this.id);
-      _cleanupCommittedDescendants(this.id, this.engine.transactionsRef.current);
+      this.deps.transactionsRef.current.delete(this.id);
+      _cleanupCommittedDescendants(this.id, this.deps.transactionsRef.current);
 
-      if (!this._hasActiveTransactions()) {
-        this.engine.actionLogRef.current = [];
-        this.engine.transactionsRef.current.clear();
-        this.engine.generationRef.current.clear();
-      }
+      this.#cleanupIfDone();
     }
   }
 
@@ -323,21 +333,20 @@ export class Transaction<S, A> implements TransactionHandle<A> {
   // 然后对每个活跃保留事务调用 _cleanupCommittedDescendants，
   // 清理其子树中已提交的子事务。现在安全了，因为保留事务已是独立根。
   // ────────────────────────────────────────────────────────────────────────
-  _rollback(): void {
-    if (this.isStale()) return;
+  // ─── classifyRollback ──────────────────────────────────────────────────
+  //
+  // 分类后代并标记 action log（阶段 1-3）。
+  // 返回 rollbackSet 和 preserveSet，供调用方统一重放。
+  // ────────────────────────────────────────────────────────────────────────
+  classifyRollback(): { rollbackSet: Set<string>; preserveSet: Set<string> } {
+    const descendants = _getAllDescendants(this.id, this.deps.transactionsRef.current);
 
-    const descendants = _getAllDescendants(this.id, this.engine.transactionsRef.current);
-
-    // 阶段 1：分类后代
     const preserveSet = new Set<string>();
     const visited = new Set<string>();
     for (const descId of descendants) {
       if (visited.has(descId)) continue;
-      const descTx = this.engine.transactionsRef.current.get(descId);
+      const descTx = this.deps.transactionsRef.current.get(descId);
       if (descTx?.onError === "commit") {
-        // 从 descTx 向上遍历到 this.id，检查是否有中间祖先
-        // 已在 preserveSet 中。如果有，descTx 已被该祖先的
-        // 提交边界覆盖。
         let underPreserve = false;
         let current: string | null = descTx.parentId;
         while (current !== null && current !== this.id) {
@@ -345,13 +354,11 @@ export class Transaction<S, A> implements TransactionHandle<A> {
             underPreserve = true;
             break;
           }
-          current = this.engine.transactionsRef.current.get(current)?.parentId ?? null;
+          current = this.deps.transactionsRef.current.get(current)?.parentId ?? null;
         }
         if (!underPreserve) {
-          // 此后代是提交边界。保留它及其整个子树
-          // （不能部分保留子树）。
           preserveSet.add(descId);
-          const subDescendants = _getAllDescendants(descId, this.engine.transactionsRef.current);
+          const subDescendants = _getAllDescendants(descId, this.deps.transactionsRef.current);
           for (const subId of subDescendants) {
             preserveSet.add(subId);
             visited.add(subId);
@@ -370,22 +377,20 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     }
 
     // 阶段 2：将回滚 action 标记为 skipped
-    for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-      const entry = this.engine.actionLogRef.current[i]!;
+    for (let i = this.snapshotIndex; i < this.deps.actionLogRef.current.length; i++) {
+      const entry = this.deps.actionLogRef.current[i]!;
       if (entry.txId !== null && rollbackSet.has(entry.txId)) {
         entry.skipped = true;
       }
     }
 
     // 阶段 3：将保留的 action 重新标记为普通 dispatch
-    // 必须在阶段 2 之后执行，以免保留的 action（txId 变为 null 后）
-    // 被 rollbackSet 检查意外捕获。
-    for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-      const entry = this.engine.actionLogRef.current[i]!;
+    for (let i = this.snapshotIndex; i < this.deps.actionLogRef.current.length; i++) {
+      const entry = this.deps.actionLogRef.current[i]!;
       if (!entry.skipped && entry.txId !== null && preserveSet.has(entry.txId)) {
-        const preservedTx = this.engine.transactionsRef.current.get(entry.txId);
+        const preservedTx = this.deps.transactionsRef.current.get(entry.txId);
         if (preservedTx?.status === "committed") {
-          this.engine.actionLogRef.current[i] = {
+          this.deps.actionLogRef.current[i] = {
             action: entry.action,
             txId: null,
             generation: 0,
@@ -394,28 +399,36 @@ export class Transaction<S, A> implements TransactionHandle<A> {
       }
     }
 
+    return { rollbackSet, preserveSet };
+  }
+
+  #rollback(): void {
+    if (this.isStale()) return;
+
+    const { rollbackSet, preserveSet } = this.classifyRollback();
+
     // 阶段 4：从快照重放，跳过已回滚的 action
     let replayState = this.snapshot;
-    for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-      const entry = this.engine.actionLogRef.current[i]!;
+    for (let i = this.snapshotIndex; i < this.deps.actionLogRef.current.length; i++) {
+      const entry = this.deps.actionLogRef.current[i]!;
       if (entry.skipped) continue;
-      replayState = this.engine.reducer(replayState, entry.action);
+      replayState = this.deps.reducer(replayState, entry.action);
     }
 
     // 在删除前将回滚记录标记为 rolledback（可能被尚未完成的
     // 异步回调引用）
     for (const id of rollbackSet) {
-      const record = this.engine.transactionsRef.current.get(id);
+      const record = this.deps.transactionsRef.current.get(id);
       if (record) record.status = "rolledback";
     }
 
-    this.engine.stateRef.current = replayState;
-    this.engine._notify();
+    this.deps.stateRef.current = replayState;
+    this.deps.notify();
 
     // 触发 rollbackSet 中每个事务的 onCancel 回调。
     // 使用 copy-and-clear 模式防止双重触发和重入注册。
     for (const id of rollbackSet) {
-      const record = this.engine.transactionsRef.current.get(id);
+      const record = this.deps.transactionsRef.current.get(id);
       if (record?.cancelCallbacks.length) {
         const callbacks = [...record.cancelCallbacks];
         record.cancelCallbacks = [];
@@ -425,35 +438,30 @@ export class Transaction<S, A> implements TransactionHandle<A> {
 
     // 从 transactionsRef 中删除已回滚的记录
     for (const id of rollbackSet) {
-      this.engine.transactionsRef.current.delete(id);
+      this.deps.transactionsRef.current.delete(id);
     }
 
     // 阶段 5：分离保留的事务
     for (const id of preserveSet) {
-      const record = this.engine.transactionsRef.current.get(id);
+      const record = this.deps.transactionsRef.current.get(id);
       if (record) {
         if (record.status === "committed") {
-          this.engine.transactionsRef.current.delete(id);
+          this.deps.transactionsRef.current.delete(id);
         } else if (record.status === "active") {
           const needsDetach = record.parentId !== null && rollbackSet.has(record.parentId);
           if (needsDetach) {
             record.parentId = null;
-            const childDescendants = _getAllDescendants(id, this.engine.transactionsRef.current);
+            const childDescendants = _getAllDescendants(id, this.deps.transactionsRef.current);
             const childOwnSet = new Set<string>();
             childOwnSet.add(id);
             for (const descId of childDescendants) {
               childOwnSet.add(descId);
             }
             let newSnapshot = this.snapshot;
-            for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-              const entry = this.engine.actionLogRef.current[i]!;
+            for (let i = this.snapshotIndex; i < record.snapshotIndex; i++) {
+              const entry = this.deps.actionLogRef.current[i]!;
               if (entry.skipped) continue;
-              if (
-                entry.txId !== null &&
-                (rollbackSet.has(entry.txId) || childOwnSet.has(entry.txId))
-              )
-                continue;
-              newSnapshot = this.engine.reducer(newSnapshot, entry.action);
+              newSnapshot = this.deps.reducer(newSnapshot, entry.action);
             }
             record.snapshot = newSnapshot;
           }
@@ -464,52 +472,51 @@ export class Transaction<S, A> implements TransactionHandle<A> {
     // 清理每个活跃保留子树中已提交的后代。
     // 现在安全了，因为保留事务已是独立根。
     for (const id of preserveSet) {
-      const record = this.engine.transactionsRef.current.get(id);
+      const record = this.deps.transactionsRef.current.get(id);
       if (record?.status === "active") {
-        _cleanupCommittedDescendants(id, this.engine.transactionsRef.current);
+        _cleanupCommittedDescendants(id, this.deps.transactionsRef.current);
       }
     }
 
-    // 阶段 6：若无活跃事务剩余，清空所有内容。
-    // action log 仅用于回滚重放；没有活跃事务就不可能回滚，
-    // 日志纯属开销。
-    if (!this._hasActiveTransactions()) {
-      this.engine.actionLogRef.current = [];
-      this.engine.transactionsRef.current.clear();
-      this.engine.generationRef.current.clear();
-    }
+    this.#cleanupIfDone();
   }
-
-  // 仅回滚直接的活跃子事务，而非所有后代。
-  // 每个子事务的 _rollback() 递归处理自己的子树，
+  // 每个子事务的 #rollback() 递归处理自己的子树，
   // 包括自己的 onError:"commit" 边界。
-  _rollbackActiveDescendants(): void {
+  #rollbackActiveDescendants(): void {
     const activeChildren: string[] = [];
-    for (const [, tx] of this.engine.transactionsRef.current) {
+    for (const [, tx] of this.deps.transactionsRef.current) {
       if (tx.parentId === this.id && tx.status === "active") {
         activeChildren.push(tx.id);
       }
     }
     for (const id of activeChildren) {
-      const tx = this.engine.transactionsRef.current.get(id);
+      const tx = this.deps.transactionsRef.current.get(id);
       if (tx?.status === "active") {
-        tx._rollback();
+        (tx as Transaction<S, A>).#rollback();
       }
     }
     let replayState = this.snapshot;
-    for (let i = this.snapshotIndex; i < this.engine.actionLogRef.current.length; i++) {
-      const entry = this.engine.actionLogRef.current[i]!;
+    for (let i = this.snapshotIndex; i < this.deps.actionLogRef.current.length; i++) {
+      const entry = this.deps.actionLogRef.current[i]!;
       if (entry.skipped) continue;
-      replayState = this.engine.reducer(replayState, entry.action);
+      replayState = this.deps.reducer(replayState, entry.action);
     }
-    this.engine.stateRef.current = replayState;
-    this.engine._notify();
+    this.deps.stateRef.current = replayState;
+    this.deps.notify();
   }
 
-  private _hasActiveTransactions(): boolean {
-    for (const tx of this.engine.transactionsRef.current.values()) {
+  #hasActiveTransactions(): boolean {
+    for (const tx of this.deps.transactionsRef.current.values()) {
       if (tx.status === "active") return true;
     }
     return false;
+  }
+
+  #cleanupIfDone(): void {
+    if (!this.#hasActiveTransactions()) {
+      this.deps.actionLogRef.current = [];
+      this.deps.transactionsRef.current.clear();
+      this.deps.generationRef.current.clear();
+    }
   }
 }

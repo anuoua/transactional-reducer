@@ -1,16 +1,16 @@
 # @transactional-reducer/react
 
-为 React 的 `useReducer` 提供事务（Transaction）支持的 Hook。将 [`@transactional-reducer/core`](../core/README.md) 引擎封装为 React 友好的 API。
+A React Hook that adds transaction support to `useReducer`. It wraps the [`@transactional-reducer/core`](../core/README.md) engine in a React-friendly API.
 
-> 事务的核心概念（回滚算法、去重策略、提交边界、过期句柄等）均在 [`@transactional-reducer/core`](../core/README.md) 中详细说明。本文档仅描述 React Hook 的用法。
+> Core concepts (rollback algorithm, deduplication strategy, commit boundary, stale handle, etc.) are documented in detail in [`@transactional-reducer/core`](../core/README.md). This document covers only the React Hook usage.
 
-## 安装
+## Installation
 
 ```bash
 npm install @transactional-reducer/react @transactional-reducer/core
 ```
 
-## 快速开始
+## Quick Start
 
 ```tsx
 import { useTransactionalReducer } from "@transactional-reducer/react";
@@ -26,24 +26,24 @@ const reducer = (state: State, action: Action): State => {
 };
 
 function Counter() {
-  const [state, api] = useTransactionalReducer(reducer, { count: 0 });
+  const [state, engine] = useTransactionalReducer(reducer, { count: 0 });
 
-  // 普通 dispatch —— 不可回滚
-  const handleInc = () => api.dispatch({ type: "inc" });
+  // non-transactional dispatch — cannot be rolled back
+  const handleInc = () => engine.dispatch({ type: "inc" });
 
-  // 事务性 dispatch —— 可回滚
+  // transactional dispatch — can be rolled back
   const handleOptimisticInc = () =>
-    api.run(async (tx) => {
-      tx.dispatch({ type: "inc" }); // 乐观更新 UI
-      await fetch("/api/inc");       // 异步请求
-      // 成功 → 自动 commit；失败 → 自动 rollback
+    engine.run(async (tx) => {
+      tx.dispatch({ type: "inc" }); // optimistic update to UI
+      await fetch("/api/inc");       // async request
+      // success → auto-commit; failure → auto-rollback
     });
 
   return (
     <div>
       <p>Count: {state.count}</p>
       <button onClick={handleInc}>+1</button>
-      <button onClick={handleOptimisticInc}>+1 (乐观)</button>
+      <button onClick={handleOptimisticInc}>+1 (optimistic)</button>
     </div>
   );
 }
@@ -51,91 +51,89 @@ function Counter() {
 
 ---
 
-## API 参考
+## API Reference
 
-### 签名
+### Signature
 
 ```ts
 function useTransactionalReducer<S, A>(
   reducer: (state: S, action: A) => S,
   initialState: S,
   options?: TransactionalReducerOptions<S>,
-): [
-  S,
-  {
-    dispatch: (action: A) => void;
-    run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R;
-    create(options?: TransactionOptions): TransactionHandle<A>;
-    getDraft(): S;
-    getTransaction(id: string): TransactionHandle<A> | undefined;
-  },
-];
+): [S, TransactionalReducer<S, A>];
 ```
 
-`TransactionalReducerOptions`、`TransactionOptions`、`TransactionHandle` 等类型均从 [`@transactional-reducer/core`](../core/README.md#api-参考) 导出。
+The second element of the tuple is a [`TransactionalReducer`](../core/README.md#transactionalreducer) engine instance — the same object used in framework-agnostic code. All engine methods are available:
 
-### 返回值
+- `engine.state` — current state (synchronous)
+- `engine.dispatch(action)` — non-transactional dispatch
+- `engine.run(task, options?)` — start a root transaction with automatic lifecycle management
+- `engine.create(options?)` — manually create a root transaction
+- `engine.getTransaction(id)` — find a transaction by ID
+- `engine.commitAll()` — commit all active root transactions
+- `engine.rollbackAll()` — roll back all active root transactions
+- `engine.subscribe(listener)` — subscribe to state changes
 
-返回一个元组 `[state, api]`：
+Types such as `TransactionalReducerOptions`, `TransactionOptions`, and `TransactionHandle` are all exported from [`@transactional-reducer/core`](../core/README.md#api-reference).
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `state` | `S` | 当前状态（由 React 渲染周期驱动） |
-| `api.dispatch` | `(action: A) => void` | 普通 dispatch，不可回滚 |
-| `api.run` | 见下方 | 启动根事务，自动管理生命周期 |
-| `api.create` | 见下方 | 手动创建根事务 |
-| `api.getDraft` | `() => S` | 获取最新 draft 状态（绕过 React 批处理延迟） |
-| `api.getTransaction` | `(id: string) => TransactionHandle \| undefined` | 按 id 查找事务 |
+### Return Value
 
-### `api.run(task, options?)`
+Returns a tuple `[state, engine]`:
 
-启动根事务并自动管理生命周期。行为与 [`engine.run()`](../core/README.md#engineruntask-options) 一致。
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | `S` | Current state (driven by React's render cycle) |
+| `engine` | `TransactionalReducer<S, A>` | The engine instance — access all methods directly |
 
-### `api.create(options?)`
+### `engine.run(task, options?)`
 
-手动创建根事务。行为与 [`engine.create()`](../core/README.md#enginecreateoptions) 一致。
+Starts a root transaction with automatic lifecycle management. Behaves identically to [`engine.run()`](../core/README.md#engineruntask-options).
 
-### `api.getDraft()`
+### `engine.create(options?)`
 
-返回引擎的即时状态。React 的状态更新可能被批处理或延迟，在异步回调中 `state` 可能不是最新的。`getDraft()` 始终返回最新值。
+Manually creates a root transaction. Behaves identically to [`engine.create()`](../core/README.md#enginecreateoptions).
+
+### `engine.state`
+
+Returns the engine's instantaneous state. React state updates may be batched or deferred, so `state` (the first tuple element) might be stale inside async callbacks. `engine.state` always returns the most up-to-date value.
 
 ```tsx
-await api.run(async (tx) => {
+await engine.run(async (tx) => {
   tx.dispatch({ type: "inc" });
-  // state.count 可能还是旧值（React 批处理）
-  const currentCount = api.getDraft().count; // 最新值
+  // state.count may still be the old value (React batching)
+  const currentCount = engine.state.count; // latest value
   tx.dispatch({ type: "set", value: currentCount * 2 });
 });
 ```
 
-### `api.getTransaction(id)`
+### `engine.getTransaction(id)`
 
-按 id 查找事务，等同于 [`engine.getTransaction()`](../core/README.md#enginegettransactionid)。
+Finds a transaction by ID. Equivalent to [`engine.getTransaction()`](../core/README.md#enginegettransactionid).
 
 ---
 
-## 使用指南
+## Usage Guide
 
-### 1. 乐观更新 + 自动回滚
+### 1. Optimistic Update + Auto-Rollback
 
 ```tsx
 async function handleSave() {
-  await api.run(async (tx) => {
+  await engine.run(async (tx) => {
     tx.dispatch({ type: "setSaving", value: true });
     tx.dispatch({ type: "updateData", value: newData });
     await saveToServer(newData);
-    // 成功 → 自动 commit；失败 → 自动 rollback
+    // success → auto-commit; failure → auto-rollback
   });
 }
 ```
 
-### 2. 可取消的异步任务
+### 2. Cancellable Async Tasks
 
-给事务指定 `id`，相同 id 的新事务会自动取消旧事务（[去重策略](../core/README.md#去重--onduplicate-策略)）：
+Assign an `id` to a transaction; a new transaction with the same ID will automatically cancel the old one ([deduplication strategy](../core/README.md#deduplication--onduplicate-strategy)):
 
 ```tsx
 async function handleSearch(query: string) {
-  await api.run(async (tx) => {
+  await engine.run(async (tx) => {
     const ac = new AbortController();
     tx.onCancel(() => ac.abort());
     tx.dispatch({ type: "setLoading", value: true });
@@ -145,15 +143,15 @@ async function handleSearch(query: string) {
 }
 ```
 
-### 3. 手动管理事务生命周期
+### 3. Manual Transaction Lifecycle Management
 
 ```tsx
 function EditForm() {
-  const [state, api] = useTransactionalReducer(reducer, initialState);
+  const [state, engine] = useTransactionalReducer(reducer, initialState);
   const txRef = useRef<TransactionHandle<Action>>();
 
   const startEditing = () => {
-    txRef.current = api.create({ id: "edit-form" });
+    txRef.current = engine.create({ id: "edit-form" });
   };
 
   const updateField = (field: string, value: string) => {
@@ -162,7 +160,7 @@ function EditForm() {
 
   const save = async () => {
     try {
-      await saveProfile(api.getDraft());
+      await saveProfile(engine.state);
       txRef.current?.commit();
     } catch {
       txRef.current?.rollback();
@@ -175,10 +173,10 @@ function EditForm() {
 }
 ```
 
-### 4. 嵌套事务（spawn）
+### 4. Nested Transactions (spawn)
 
 ```tsx
-await api.run(async (tx) => {
+await engine.run(async (tx) => {
   tx.dispatch({ type: "setSubmitting", value: true });
 
   await tx.spawn(async (childTx) => {
@@ -192,16 +190,16 @@ await api.run(async (tx) => {
 }, { id: "submit" });
 ```
 
-### 5. 并发事务
+### 5. Concurrent Transactions
 
 ```tsx
 const [result1, result2] = await Promise.all([
-  api.run(async (tx) => {
+  engine.run(async (tx) => {
     tx.dispatch({ type: "setUsersLoading", value: true });
     const users = await fetchUsers();
     tx.dispatch({ type: "setUsers", value: users });
   }, { id: "fetch-users" }),
-  api.run(async (tx) => {
+  engine.run(async (tx) => {
     tx.dispatch({ type: "setPostsLoading", value: true });
     const posts = await fetchPosts();
     tx.dispatch({ type: "setPosts", value: posts });
@@ -211,18 +209,18 @@ const [result1, result2] = await Promise.all([
 
 ---
 
-## 更多
+## Learn More
 
-- **核心概念**（回滚算法、generation 机制、去重策略、提交边界、onCancel 等）：参见 [`@transactional-reducer/core`](../core/README.md#核心机制详解)
-- **常见场景**（搜索自动取消、多步骤提交 + 部分保留）：参见 [`@transactional-reducer/core`](../core/README.md#常见场景)
-- **注意事项**：参见 [`@transactional-reducer/core`](../core/README.md#注意事项)
+- **Core concepts** (rollback algorithm, generation mechanism, deduplication strategy, commit boundary, onCancel, etc.): See [`@transactional-reducer/core`](../core/README.md#core-mechanics)
+- **Common scenarios** (search auto-cancel, multi-step commit + partial retain): See [`@transactional-reducer/core`](../core/README.md#common-scenarios)
+- **Caveats**: See [`@transactional-reducer/core`](../core/README.md#caveats)
 
 ---
 
-## React 特有注意事项
+## React-Specific Notes
 
-1. **React 批处理**：在异步回调中，React 的 `state` 可能不是最新的。使用 `api.getDraft()` 获取即时状态。
+1. **React batching**: Inside async callbacks, React's `state` may not be up to date. Use `engine.state` to get the instantaneous state.
 
-2. **API 稳定性**：`api` 对象及其方法（`dispatch`、`run` 等）在组件整个生命周期中引用稳定，可安全地省略 `useEffect`/`useCallback` 的依赖项。
+2. **Engine stability**: The `engine` reference is stable throughout the component's lifecycle (backed by `useRef`), so it can safely be omitted from `useEffect`/`useCallback` dependency arrays.
 
-3. **组件隔离**：每个组件实例持有独立的引擎实例（通过 `useRef`），状态不会跨组件共享。
+3. **Component isolation**: Each component instance holds an independent engine instance; state is not shared across components.

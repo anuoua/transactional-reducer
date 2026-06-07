@@ -9,8 +9,9 @@ import {
   type OnDuplicateStrategy,
   type TransactionOptions,
   type TransactionHandle,
+  type TransactionInternal,
   type TransactionalReducerOptions,
-  type TransactionEngine,
+  type TransactionDeps,
 } from "./Transaction";
 
 export type {
@@ -25,15 +26,15 @@ export type {
 
 export type { Transaction };
 
-export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
+export class TransactionalReducer<S, A> {
   readonly reducer: (state: S, action: A) => S;
   readonly options: TransactionalReducerOptions<S> | undefined;
   readonly stateRef: Ref<S>;
   readonly actionLogRef: Ref<ActionLogEntry<A>[]>;
-  readonly transactionsRef: Ref<Map<string, Transaction<S, A>>>;
+  readonly transactionsRef: Ref<Map<string, TransactionInternal<S, A>>>;
   readonly generationRef: Ref<Map<string, number>>;
 
-  private _listeners = new Set<(state: S) => void>();
+  #listeners = new Set<(state: S) => void>();
 
   constructor(
     reducer: (state: S, action: A) => S,
@@ -53,15 +54,15 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   }
 
   subscribe(listener: (state: S) => void): () => void {
-    this._listeners.add(listener);
+    this.#listeners.add(listener);
     return () => {
-      this._listeners.delete(listener);
+      this.#listeners.delete(listener);
     };
   }
 
-  _notify(): void {
+  #notify(): void {
     const state = this.stateRef.current;
-    for (const listener of this._listeners) {
+    for (const listener of this.#listeners) {
       listener(state);
     }
   }
@@ -70,10 +71,10 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   // 这确保它们在回滚重放中被保留（txId:null，不在任何 rollbackSet 中）。
   // 无活跃事务时日志不必要——不可能发生回滚，因此跳过日志记录。
   dispatch(action: A): void {
-    if (this._hasActiveTransactions()) {
+    if (this.#hasActiveTransactions()) {
       this.actionLogRef.current.push({ action, txId: null, generation: 0 });
     }
-    this._applyAction(action);
+    this.#applyAction(action);
   }
 
   run<R>(task: (tx: TransactionHandle<A>) => R, options?: TransactionOptions): R {
@@ -84,8 +85,8 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
         throw new Error(`Cannot run: transaction "${options.id}" is already active`);
       }
     }
-    const tx = this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
-    return this._runWithTx(tx, task);
+    const tx = this.#createTx(options?.id, null, options?.onError ?? "rollback", strategy);
+    return this.#runWithTx(tx, task);
   }
 
   create(options?: TransactionOptions): TransactionHandle<A> {
@@ -94,16 +95,124 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
       const existing = this.transactionsRef.current.get(options.id);
       if (existing?.status === "active") return existing;
     }
-    return this._createTx(options?.id, null, options?.onError ?? "rollback", strategy);
+    return this.#createTx(options?.id, null, options?.onError ?? "rollback", strategy);
   }
 
   getTransaction(id: string): TransactionHandle<A> | undefined {
     return this.transactionsRef.current.get(id);
   }
 
-  _applyAction(action: A): void {
+  rollbackAll(): void {
+    const roots: TransactionInternal<S, A>[] = [];
+    for (const tx of this.transactionsRef.current.values()) {
+      if (tx.parentId === null && tx.status === "active") {
+        roots.push(tx);
+      }
+    }
+    if (roots.length === 0) return;
+
+    // 阶段 1-3：对所有根事务统一分类并标记 action log
+    const allRollbackSet = new Set<string>();
+    const allPreserveSet = new Set<string>();
+    let earliestSnapshotIndex = Infinity;
+    let earliestSnapshot: S | undefined;
+
+    for (const tx of roots) {
+      if (tx.isStale()) continue;
+      const { rollbackSet, preserveSet } = tx.classifyRollback();
+      for (const id of rollbackSet) allRollbackSet.add(id);
+      for (const id of preserveSet) allPreserveSet.add(id);
+      if (tx.snapshotIndex < earliestSnapshotIndex) {
+        earliestSnapshotIndex = tx.snapshotIndex;
+        earliestSnapshot = tx.snapshot;
+      }
+    }
+
+    if (allRollbackSet.size === 0) return;
+
+    // 阶段 4：从最早的快照统一重放
+    let replayState = earliestSnapshot as S;
+    for (let i = earliestSnapshotIndex; i < this.actionLogRef.current.length; i++) {
+      const entry = this.actionLogRef.current[i]!;
+      if (entry.skipped) continue;
+      replayState = this.reducer(replayState, entry.action);
+    }
+
+    // 标记 rolledback、触发 onCancel、删除记录
+    for (const id of allRollbackSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record) record.status = "rolledback";
+    }
+
+    this.stateRef.current = replayState;
+    this.#notify();
+
+    for (const id of allRollbackSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record?.cancelCallbacks.length) {
+        const callbacks = [...record.cancelCallbacks];
+        record.cancelCallbacks = [];
+        for (const cb of callbacks) cb();
+      }
+    }
+
+    for (const id of allRollbackSet) {
+      this.transactionsRef.current.delete(id);
+    }
+
+    // 阶段 5：分离保留的事务
+    for (const id of allPreserveSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record) {
+        if (record.status === "committed") {
+          this.transactionsRef.current.delete(id);
+        } else if (record.status === "active") {
+          const needsDetach = record.parentId !== null && allRollbackSet.has(record.parentId);
+          if (needsDetach) {
+            record.parentId = null;
+            let newSnapshot = earliestSnapshot as S;
+            for (let i = earliestSnapshotIndex; i < record.snapshotIndex; i++) {
+              const entry = this.actionLogRef.current[i]!;
+              if (entry.skipped) continue;
+              newSnapshot = this.reducer(newSnapshot, entry.action);
+            }
+            record.snapshot = newSnapshot;
+          }
+        }
+      }
+    }
+
+    // 清理保留子树中已提交的后代
+    for (const id of allPreserveSet) {
+      const record = this.transactionsRef.current.get(id);
+      if (record?.status === "active") {
+        _cleanupCommittedDescendants(id, this.transactionsRef.current);
+      }
+    }
+
+    // 阶段 6：最终清理
+    if (!this.#hasActiveTransactions()) {
+      this.actionLogRef.current = [];
+      this.transactionsRef.current.clear();
+      this.generationRef.current.clear();
+    }
+  }
+
+  commitAll(): void {
+    const roots: TransactionInternal<S, A>[] = [];
+    for (const tx of this.transactionsRef.current.values()) {
+      if (tx.parentId === null && tx.status === "active") {
+        roots.push(tx);
+      }
+    }
+    for (const tx of roots) {
+      tx.finalize();
+    }
+  }
+
+  #applyAction(action: A): void {
     this.stateRef.current = this.reducer(this.stateRef.current, action);
-    this._notify();
+    this.#notify();
   }
 
   // ─── _createTx ────────────────────────────────────────────────────────
@@ -127,7 +236,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   //     （parentId === this.id 匹配）并错误地回滚它们
   // 这就是 runWithTx 在 _commit/_rollback 前检查过期的原因。
   // ────────────────────────────────────────────────────────────────────────
-  _createTx(
+  #createTx(
     id: string | undefined,
     parentId: string | null,
     onError: OnErrorStrategy,
@@ -138,11 +247,10 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
     if (existing?.status === "active") {
       switch (onDuplicate) {
         case "rollback":
-          existing._rollback();
+          existing.rollback();
           break;
         case "commit":
-          existing._rollbackActiveDescendants();
-          existing._commit();
+          existing.finalize();
           if (existing.parentId !== null) {
             for (let i = existing.snapshotIndex; i < this.actionLogRef.current.length; i++) {
               const entry = this.actionLogRef.current[i]!;
@@ -168,11 +276,31 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
       }
     }
 
-    const generation = this._nextGeneration(txId);
+    const generation = this.#nextGeneration(txId);
     const snapshot = (this.options?.snapshot ?? structuredClone)(this.stateRef.current);
     const snapshotIndex = this.actionLogRef.current.length;
 
-    const tx = new Transaction(this, txId, parentId, onError, generation, snapshot, snapshotIndex);
+    const tx = new Transaction(
+      {
+        reducer: this.reducer,
+        options: this.options,
+        stateRef: this.stateRef,
+        actionLogRef: this.actionLogRef,
+        transactionsRef: this.transactionsRef,
+        generationRef: this.generationRef,
+        createTx: (id, parentId, onError, onDuplicate) =>
+          this.#createTx(id, parentId, onError, onDuplicate),
+        runWithTx: (tx, task) => this.#runWithTx(tx, task),
+        applyAction: (action) => this.#applyAction(action),
+        notify: () => this.#notify(),
+      },
+      txId,
+      parentId,
+      onError,
+      generation,
+      snapshot,
+      snapshotIndex,
+    );
 
     this.transactionsRef.current.set(txId, tx);
     return tx;
@@ -196,7 +324,7 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
   //
   // 对于同步任务，执行期间不可能过期（无异步暂停），无需检查。
   // ────────────────────────────────────────────────────────────────────────
-  _runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R {
+  #runWithTx<R>(tx: Transaction<S, A>, task: (tx: TransactionHandle<A>) => R): R {
     try {
       const result = task(tx);
       if (result instanceof Promise) {
@@ -205,53 +333,44 @@ export class TransactionalReducer<S, A> implements TransactionEngine<S, A> {
             // 过期检查：如果事务已被替换（例如第二次 run 使用相同 id），
             // 跳过提交——新事务现在拥有该 id。
             if (!tx.isStale()) {
-              tx._rollbackActiveDescendants();
-              tx._commit();
+              tx.finalize();
             }
             return r;
           },
           (e) => {
             if (tx.onError === "commit") {
-              // onError:"commit" 表示出错时保留变更。
-              // 仍需过期检查——过期句柄绝不能提交
-              // （会从 transactionsRef 删除新事务）。
               if (!tx.isStale()) {
-                tx._rollbackActiveDescendants();
-                tx._commit();
+                tx.finalize();
               }
             } else {
-              // _rollback 内部有自己的过期检查，
-              // 此处无需额外检查。
-              tx._rollback();
+              tx.rollback();
             }
             throw e;
           },
         ) as unknown as R;
       }
       // 同步成功：同步执行期间不可能过期
-      tx._rollbackActiveDescendants();
-      tx._commit();
+      tx.finalize();
       return result;
     } catch (e) {
       // 同步错误：同样不可能过期
       if (tx.onError === "commit") {
-        tx._rollbackActiveDescendants();
-        tx._commit();
+        tx.finalize();
       } else {
-        tx._rollback();
+        tx.rollback();
       }
       throw e;
     }
   }
 
-  private _nextGeneration(txId: string): number {
+  #nextGeneration(txId: string): number {
     const prev = this.generationRef.current.get(txId) ?? 0;
     const next = prev + 1;
     this.generationRef.current.set(txId, next);
     return next;
   }
 
-  private _hasActiveTransactions(): boolean {
+  #hasActiveTransactions(): boolean {
     for (const tx of this.transactionsRef.current.values()) {
       if (tx.status === "active") return true;
     }

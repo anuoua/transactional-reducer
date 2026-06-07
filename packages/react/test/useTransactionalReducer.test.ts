@@ -58,16 +58,16 @@ describe("useTransactionalReducer", () => {
     });
   });
 
-  describe("getDraft", () => {
-    it("returns current draft state", () => {
+  describe("engine.state", () => {
+    it("returns current state", () => {
       const { result } = renderHook(() => useTransactionalReducer(reducer, initialState));
 
-      expect(result.current[1].getDraft()).toEqual({ count: 0 });
+      expect(result.current[1].state).toEqual({ count: 0 });
 
       act(() => {
         result.current[1].dispatch({ type: "inc" });
       });
-      expect(result.current[1].getDraft()).toEqual({ count: 1 });
+      expect(result.current[1].state).toEqual({ count: 1 });
     });
   });
 
@@ -273,7 +273,7 @@ describe("useTransactionalReducer", () => {
     it("accepts custom snapshot function", () => {
       const { result } = renderHook(() =>
         useTransactionalReducer(reducer, initialState, {
-          snapshot: (s) => ({ count: s.count }),
+          snapshot: (s: State) => ({ count: s.count }),
         }),
       );
 
@@ -376,17 +376,17 @@ describe("useTransactionalReducer", () => {
     });
   });
 
-  describe("api stability", () => {
-    it("api object reference is stable across renders", () => {
+  describe("engine stability", () => {
+    it("engine reference is stable across renders", () => {
       const { result, rerender } = renderHook(() => useTransactionalReducer(reducer, initialState));
 
-      const firstApi = result.current[1];
+      const firstEngine = result.current[1];
       rerender();
-      const secondApi = result.current[1];
-      expect(firstApi).toBe(secondApi);
+      const secondEngine = result.current[1];
+      expect(firstEngine).toBe(secondEngine);
     });
 
-    it("dispatch function is stable across renders", () => {
+    it("dispatch method is stable across renders", () => {
       const { result, rerender } = renderHook(() => useTransactionalReducer(reducer, initialState));
 
       const firstDispatch = result.current[1].dispatch;
